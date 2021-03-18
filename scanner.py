@@ -39,16 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 
-# 1. Out here, set a global "spreadsheetCheckStartTimeSecs" to -1
-# 2. set up a new handler function and put it in the queue right when the queue starts up
-# 3. have the handler function do these things:
-#    a. check "if spreadsheetCheckStartTimeSecs is -1, set spreadsheetCheckStartTimeSecs to current wall clock time"
-#    b. sleep for 500ms
-#    c. check to see if "now minus spreadsheetCheckStartTimeSecs is >= 5 minutes"
-#       i. if yes, do your spreadsheet query
-#       ii. if no, add this same function back to the queue again
-
-
 class BarcodeDisplay(QWidget):
 
     def __init__(self, regex_pattern, spreadsheet_key, destination_sheet):
@@ -57,6 +47,7 @@ class BarcodeDisplay(QWidget):
         self.spreadsheet_key = spreadsheet_key
         self.destination_sheet = destination_sheet
 
+        # TODO: Change this back to 5 minutes.
         #self.SPREADSHEET_CHECK_START_TIME_SECS = 5 * 60
         self.SPREADSHEET_CHECK_START_TIME_SECS = 5
         self.spreadsheetCheckStartTimeSecs = -1
