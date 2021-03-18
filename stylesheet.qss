@@ -1,0 +1,43 @@
+QLineEdit.inputField {
+    color: #031D44;
+    border: 1px solid transparent #6D8EA0;
+    border-radius: 5px;
+    padding: 0 8px;
+    background: #f0f1ff;
+    selection-background-color: darkgray;
+}
+
+QLabel.display {
+    font-family: Roboto Mono;
+    font-size: 12pt; 
+    color: #f0f1ff;
+}
+
+QLabel.headers {
+    font-family: Roboto Mono;
+    font-size: 12pt; 
+    font-weight: bold; 
+    color: #f0f1ff;
+}
+
+QLabel.alert {
+    font-family: Roboto Mono;
+    font-size: 12pt; 
+    font-weight: bold; 
+    color: #F28F3B;
+    background-position: bottom right;
+}
+
+QLabel.entry {
+    font-family: Roboto Mono;
+    background-color: #3E517A;
+    color: #f0f1ff;
+    border: 2px solid #82C0CC;
+    border-radius: 10px;
+    padding: 0 8px;
+    
+}
+
+QWidget {
+    background-color: #030027;
+}

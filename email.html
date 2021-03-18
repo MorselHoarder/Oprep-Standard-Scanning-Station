@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      div {
+        font-family: arial, helvetica, sans-serif;
+      }
+      th {
+        text-align: right;
+        padding: 4px;
+        padding-right: 8px;
+        font-style: italic;
+      }
+      td {
+        text-align: left; 
+        padding: 4px;
+        padding-right: 8px;
+      }
+      </style>
+  </head>
+  <body>
+    <div style="margin-bottom: 8px;">
+      This is an automated email sent by the GC-MS Rework Log to inform you of rework that requires your review.
+    </div>
+
+    <div style="background-color:darkorchid; height: 4px; margin-bottom: 25px;"></div>
+
+    <div>
+      <table>
+        <tbody>
+          <tr>
+            <th style="background-color:rgb(227, 215, 252);">Analyst</th><td style="background-color:rgb(227, 215, 252);"> <?= analyst ?> </td>
+          </tr>
+          <tr>
+            <th style="background-color:lavender;">Test</th><td style="background-color:lavender;"> <?= test ?> </td>
+          </tr>
+          <tr>
+            <th style="background-color:rgb(227, 215, 252);">Sample</th><td style="background-color:rgb(227, 215, 252);"> <?= sample ?> </td>
+          </tr>
+          <tr>
+            <th style="background-color:lavender;">Prep WG</th><td style="background-color:lavender;"> <?= prepWG ?> </td>
+          </tr>
+          <tr>
+            <th style="background-color:rgb(227, 215, 252);">Category</th><td style="background-color:rgb(227, 215, 252);"> <?= category ?> </td>
+          </tr>
+          <tr>
+            <th style="background-color:lavender;">Description</th><td style="background-color:lavender;"> <?= reworkDesc ?> </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div><br>Please check the log for more details.</div>
+   
+  </body>
+</html>
+
