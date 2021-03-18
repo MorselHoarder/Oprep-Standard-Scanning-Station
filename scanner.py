@@ -127,7 +127,7 @@ class BarcodeDisplay(QWidget):
 
         if int(time()) - self.spreadsheetCheckStartTimeSecs >= self.SPREADSHEET_CHECK_START_TIME_SECS:
             # query sheet
-            print("MY NAME IS ANDY AND I'M COOL")
+            print("MY NAME IS ANDY AND I'M REALLY COOL")
             self.spreadsheetCheckStartTimeSecs = -1
             
         self.queue.put(self.maybe_query_spreadsheet)
