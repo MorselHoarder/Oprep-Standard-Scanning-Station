@@ -1,7 +1,7 @@
 """
 Oprep Standard Scanning Station by Andrew Schult
 
-Modified from Oprep Standard Scanning Station
+Interacts with Prepped Organic Standard Inventory Google Sheet
 """
 
 # stdlib
