@@ -14,6 +14,7 @@ import threading
 import socket
 import traceback
 import logging
+import configparser
 
 # dependencies
 import gspread
@@ -314,14 +315,14 @@ class BarcodeDisplay(QWidget):
 
 
 def main():
-    # pattern ignores case by default
-    BARCODE_PATTERN = r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
-    # SPREADSHEET_KEY = " prepped organic standard inventory key goes here"
-    SPREADSHEET_KEY = "" # test spreadsheet
-    SHEET_NAME_TO_SCAN = "Scan"
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    SPREADSHEET_KEY = config.get('SETTINGS', 'spreadsheet_key')
+    DESTINATION_SHEET = config.get('SETTINGS', 'destination_sheet')
+    BARCODE_PATTERN = config.get('SETTINGS', 'barcode_pattern') # class ignores case by default
 
     app = QApplication(sys.argv)
-    _ = BarcodeDisplay(BARCODE_PATTERN, SPREADSHEET_KEY, SHEET_NAME_TO_SCAN)
+    _ = BarcodeDisplay(BARCODE_PATTERN, SPREADSHEET_KEY, DESTINATION_SHEET)
     sys.exit(app.exec_())
 
 
