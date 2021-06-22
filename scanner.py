@@ -7,33 +7,22 @@ Website: zetcode.com
 
 # stdlib
 import sys
-import os
 import re
-from time import sleep, time
+from time import sleep
 import datetime as dt
 import configparser
 import queue
 import threading
 import socket
-from enum import Enum
 import json
 import logging
-import copy
-import shutil
-from pathlib import Path
-from distutils.version import StrictVersion
 from random import randint
 
 # dependencies
 import gspread
 from PyQt5.QtCore import (
     Qt, 
-    QObject, 
-    QThread, 
-    pyqtSignal, 
-    pyqtSlot,
-    QThreadPool, 
-    QRunnable,
+    QProcess,
     QTimer
 )
 from PyQt5.QtGui import QIcon
@@ -42,12 +31,7 @@ from PyQt5.QtWidgets import (
     QApplication, 
     QLineEdit, 
     QLabel, 
-    QVBoxLayout,
     QGridLayout, 
-    QDialog, 
-    QDialogButtonBox,
-    QSpinBox,
-    QPushButton,
     qApp
 )
 
@@ -183,12 +167,12 @@ class BarcodeDisplay(QWidget):
                 except AccessSpreadsheetError as e:
                     print("AccessSpreadsheetError")
                     #TODO add handling / make dialog box for serious alerts
-                    qApp.quit()
+                    self.restartApp()
                 except gspread.exceptions.APIError as e:
                     if API_error_count >= 5:
                         # TODO add serious error handling
                         logger.warning("API error count exceeded maximum tries.", exc_info=True)
-                        qApp.quit()
+                        self.restartApp()
                     else:
                         API_error_count += 1
                     code = e.response.json()['error']['code']
@@ -206,10 +190,10 @@ class BarcodeDisplay(QWidget):
                             f"Retrying command in {10+(random_int/60)} minutes.",
                             exc_info=True)
                         sleep(600+random_int)
-                except:
+                except Exception:
                     logger.error('Unexpected error with mainIOhandler function', 
                         exc_info=True)
-                    qApp.quit()
+                    self.restartApp()
                 else: 
                     self.alert.setText("")
                     sleep(handler_wait_after) # to not max google api limits
@@ -341,12 +325,26 @@ class BarcodeDisplay(QWidget):
             if w:
                 w.deleteLater()
 
+    def restartApp(self, current_item=None, create_dialog=False):
+        do_restart = True
+        if create_dialog:
+            # TODO add dialog question to ask if you want to restart
+            pass
+
+        logger.info("Restarting Scanning Station")
+        # TODO add dump queue to JSON
+
+        if do_restart:
+            QProcess.startDetached("python", sys.argv)
+
+        qApp.quit()
+
 
 def main():
     # pattern ignores case by default
     BARCODE_PATTERN = r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
-    SPREADSHEET_KEY = "1c0J8E4Z96jPnu2hqgwEEXzWmhldv-BHCU66rwUCrWw0"
-    # SPREADSHEET_KEY = "11Y3oufYpwWanKRB0KzxsrhkqErfPgak-LylKCt6a4i0" # test spreadsheet
+    # SPREADSHEET_KEY = "1c0J8E4Z96jPnu2hqgwEEXzWmhldv-BHCU66rwUCrWw0"
+    SPREADSHEET_KEY = "11Y3oufYpwWanKRB0KzxsrhkqErfPgak-LylKCt6a4i0" # test spreadsheet
     SHEET_NAME_TO_SCAN = "Scan"
 
     app = QApplication(sys.argv)
