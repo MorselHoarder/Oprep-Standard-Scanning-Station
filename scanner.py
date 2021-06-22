@@ -1,43 +1,66 @@
 """
-Oprep Standard Scanning Station by Andrew Schult
+Orep Standard Scanning Station by Andrew Schult
 
-Interacts with Prepped Organic Standard Inventory Google Sheet
+Had much help from the ZetCode PyQt5 tutorial
+Website: zetcode.com
 """
 
 # stdlib
 import sys
+import os
+import re
 from time import sleep, time
 import datetime as dt
-import re
+import configparser
 import queue
 import threading
 import socket
-import traceback
+from enum import Enum
+import json
 import logging
-import configparser
+import copy
+import shutil
+from pathlib import Path
+from distutils.version import StrictVersion
+from random import randint
 
 # dependencies
 import gspread
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import (
+    Qt, 
+    QObject, 
+    QThread, 
+    pyqtSignal, 
+    pyqtSlot,
+    QThreadPool, 
+    QRunnable,
+    QTimer
+)
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
-    QWidget, 
+    QWidget,
     QApplication, 
     QLineEdit, 
     QLabel, 
+    QVBoxLayout,
     QGridLayout, 
-    QLayoutItem, 
-    qApp,
+    QDialog, 
+    QDialogButtonBox,
+    QSpinBox,
+    QPushButton,
+    qApp
 )
 
 
-# logger info
 log_format = '%(asctime)s - %(levelname)s - %(message)s'
 logging.basicConfig(format=log_format, 
                     handlers=[logging.FileHandler('errors.log')],
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class AccessSpreadsheetError(OSError):
+    pass
 
 
 class BarcodeDisplay(QWidget):
@@ -47,11 +70,6 @@ class BarcodeDisplay(QWidget):
         self.regex_pattern = regex_pattern
         self.spreadsheet_key = spreadsheet_key
         self.destination_sheet = destination_sheet
-
-        # TODO: Change this back to 5 minutes.
-        #self.SPREADSHEET_CHECK_START_TIME_SECS = 5 * 60
-        self.SPREADSHEET_CHECK_START_TIME_SECS = 5
-        self.spreadsheetCheckStartTimeSecs = -1
         
         self.initUI()
 
@@ -60,12 +78,8 @@ class BarcodeDisplay(QWidget):
         self.setGeometry(50, 50, 720, 480)
         self.setWindowTitle('Oprep Standard Scanning Station')
         self.setWindowIcon(QIcon('logo.png'))
-        
-        try:
-            with open("stylesheet.qss", "r") as stylesheet:
-                self.setStyleSheet(stylesheet.read())
-        except:
-            logger.error('Stylesheet', exc_info=1)
+        with open("stylesheet.qss", "r") as stylesheet:
+            self.setStyleSheet(stylesheet.read())
 
         self.grid = QGridLayout(self)
         self.setLayout(self.grid)
@@ -97,33 +111,22 @@ class BarcodeDisplay(QWidget):
         self.entries = [['' for y in range(3)] for x in range(20)]
         self.updateList()
 
-        self.getAccessToSpreadsheet()
-         
-        # initialize separate thread to handle API queries
         self.queue = queue.Queue()
-        self.thread1 = threading.Thread(target=self.handleBarcodeQueue, daemon=True)
-        self.thread1.start()
+        self.stopIOthread = False
+        self.IOthread = threading.Thread(target=self.queueChecker, daemon=True).start()
 
-        self.queue.put(self.maybe_query_spreadsheet)
+        # get initial access to spreadsheet
+        self.queue.put(dict(function=self.getAccessToSpreadsheet, handler_wait_after=0))
+
+        self._refresh_spreadsheet_timer = QTimer()
+        self._refresh_spreadsheet_timer.setInterval(60 * 60 * 1000) # every 1 hour in msecs
+        self._refresh_spreadsheet_timer.timeout.connect(self._refreshSpreadsheet)
+        self._refresh_spreadsheet_timer.start()
 
         self.compiled_pattern = re.compile(self.regex_pattern, flags=re.IGNORECASE)
 
-        self.show()
-        # self.showMaximized() # displays the window at full res
-
-    def maybe_query_spreadsheet(self):
-        if self.spreadsheetCheckStartTimeSecs == -1:
-            self.spreadsheetCheckStartTimeSecs = int(time())
-
-        sleep(0.5)
-
-        if int(time()) - self.spreadsheetCheckStartTimeSecs >= self.SPREADSHEET_CHECK_START_TIME_SECS:
-            # query sheet
-            print("MY NAME IS ANDY AND I'M REALLY COOL")
-            self.spreadsheetCheckStartTimeSecs = -1
-            
-        self.queue.put(self.maybe_query_spreadsheet)
-
+        # self.show()
+        self.showMaximized() # displays the window at full res
 
     @staticmethod
     def isConnected():
@@ -131,12 +134,10 @@ class BarcodeDisplay(QWidget):
         try:
             conn = socket.create_connection(("1.1.1.1", 80))
             if conn is not None:
-                conn.close()
+                conn.close
             return True
         except OSError:
             pass
-        except:
-            logger.error('Unexpected error with isConnected function', exc_info=1)
         return False
 
     def getAccessToSpreadsheet(self):
@@ -145,73 +146,106 @@ class BarcodeDisplay(QWidget):
         if self.isConnected():
             try: 
                 gc = gspread.service_account(filename='credentials.json')
-            except:
+            except (FileNotFoundError, json.decoder.JSONDecodeError) as e:
                 self.alert.setText("SERVICE ACCOUNT FAILURE")
-                logger.error("Cannot access credentials or service account",
-                            exc_info=1)
+                logger.error("Cannot access credentials and/or service account.", 
+                    exc_info=True)
+                raise AccessSpreadsheetError from e
             else:
                 try:
-                    ss = gc.open_by_key(self.spreadsheet_key)
-                    self.sheet = ss.worksheet(self.destination_sheet)
-                except:
+                    self.ss = gc.open_by_key(self.spreadsheet_key)
+                except TypeError as e:
                     self.alert.setText("SPREADSHEET CONNECTION FAILURE")
-                    logger.error("Cannot initialize connection to inventory sheet",
-                            exc_info=1)
-        else:
-            self.alert.setText("NO INTERNET CONNECTION")
+                    logger.error("Missing spreadsheet_key.", exc_info=True)
+                    raise AccessSpreadsheetError from e
+                else:
+                    try:
+                        if self.destination_sheet is not None:
+                            self.sheet = self.ss.worksheet(self.destination_sheet)
+                        else:
+                            self.sheet = self.ss.sheet1
+                        print("Spreadsheet access successful")
+                    except gspread.exceptions.WorksheetNotFound as e:
+                        self.alert.setText(f"WORKSHEET {self.destination_sheet} NOT FOUND")
+                        logger.error(f"Cannot find sheet named {self.destination_sheet}.")
+                        raise AccessSpreadsheetError from e
 
-    def sendBarcode(self, function, *args, **kwargs):
+    def mainIOhandler(self, function, *args, handler_wait_after=4, **kwargs):
         """Calls `function` with provided arguments.
-        Handles exceptions and API errors."""
+        Main function for interacting with spreadsheet or other IO operations.
+        Handles exceptions and API errors.
+        Use `handler_wait_after` to define how long to sleep after successful finish."""
         API_error_count = 0
         while (True):
             if self.isConnected() is True:
                 try:
                     function(*args, **kwargs)
+                except AccessSpreadsheetError as e:
+                    print("AccessSpreadsheetError")
+                    #TODO add handling / make dialog box for serious alerts
+                    qApp.quit()
                 except gspread.exceptions.APIError as e:
-                    code = e.response.json()['error']['code']
-                    status = e.response.json()['error']['status']
-                    print("API error code:", code, status)
-                    if (code == 429):
-                        API_error_count += 1
-                        self.alert.setText("API rate limit exceeded")
-                        logger.warning("API rate limit exceeded. %s", 
-                            f"Retrying in {5*API_error_count} minutes.")
-                        sleep(300*API_error_count)
+                    if API_error_count >= 5:
+                        # TODO add serious error handling
+                        logger.warning("API error count exceeded maximum tries.", exc_info=True)
+                        qApp.quit()
                     else:
-                        self.alert.setText("Unhandled API Error")
+                        API_error_count += 1
+                    code = e.response.json()['error']['code']
+                    message = e.response.json()['error']['message']
+                    self.alert.setText(f"{str(code)}: {str(message)}")
+                    random_int = randint(1, 120)
+                    if (code == 429):                      
+                        logger.warning("API rate limit exceeded. %s", 
+                            f"Retrying in {5*API_error_count+(random_int/60)} minutes.")
+                        sleep(300*API_error_count+random_int)
+                    else:
                         logger.error("Unhandled API Error. \n%s %s \n%s", 
                             "The following command was not executed:",
                             f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            "Retrying command in 10 minutes.",
-                            exc_info=1)
-                        sleep(600)
+                            f"Retrying command in {10+(random_int/60)} minutes.",
+                            exc_info=True)
+                        sleep(600+random_int)
                 except:
-                    logger.error('Unexpected error with sendBarcode function', exc_info=1)
+                    logger.error('Unexpected error with mainIOhandler function', 
+                        exc_info=True)
                     qApp.quit()
                 else: 
                     self.alert.setText("")
-                    sleep(2.5) # to not max google api limits
+                    sleep(handler_wait_after) # to not max google api limits
                     return
             else:
-                self.alert.setText("NO INTERNET CONNECTION")
+                random_int = randint(1, 120)
                 logger.warning("Cannot reach internet. \n%s %s \n%s", 
                             "The following command was not executed:",
                             f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            "Retrying connection in 10 minutes.")
-                sleep(600)
-                self.getAccessToSpreadsheet()
+                            f"Retrying connection in {10+(random_int/60)} minutes.")
+                sleep(600+random_int)
 
-    def handleBarcodeQueue(self): 
-        #threaded function that checks queue 
+    def queueChecker(self): 
+        """threaded function that checks queue and pushes items to the handler."""
         while (True):
             if (self.queue.qsize() > 0):
-                dict_item = self.queue.get()
-                if type(dict_item) is dict:
-                    self.sendBarcode(**dict_item)
+                item = self.queue.get()
+                if callable(item):
+                    self.mainIOhandler(item)
+                elif isinstance(item, dict):
+                    self.mainIOhandler(**item)
+                elif isinstance(item, (tuple, list)):
+                    self.mainIOhandler(*item)
                 else:
-                    dict_item()
+                    logger.warning('Item of wrong type added to queue: %s of type %s', 
+                        str(item), type(item))
+
+            if self.stopIOthread:
+                break
+
             sleep(0.005) #free CPU briefly
+
+    def _refreshSpreadsheet(self):
+        """To be called by `_refresh_spreadsheet_timer`.
+        Puts `getAccessToSpreadsheet` into queue."""
+        self.queue.put(dict(function=self.getAccessToSpreadsheet))
 
     def updateList(self): 
         # updates the list UI
@@ -228,8 +262,7 @@ class BarcodeDisplay(QWidget):
             # put the new widget at the (x,y) position
             self.grid.addWidget(label, *position)
 
-    def keyPressEvent(self, e):  
-        # where the fun begins
+    def keyPressEvent(self, e):  # where the fun begins
         # QT function that waits for an 'enter' keystroke
         if (e.key() == Qt.Key_Return) and (len(self.le.text()) > 0):
             input_str = self.le.text()
@@ -238,21 +271,16 @@ class BarcodeDisplay(QWidget):
             self.handleInput(input_str)
 
     def handleInput(self, input_str):
-        """This is where we figure out what to do with the input.
-        Chooses the function with args to push into the queue."""
         if input_str == "remove last barcode":
             if self.entries[0][0] != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.delete_rows, start_index=1))
+                self.queue.put(dict(function=self.sheet.delete_rows, start_index=1))  # whole barcode to the api queue
             self.rotateListUp()
-
         elif input_str == "retry connection":
-            if self.isConnected() is True:
-                self.alert.setText("")
-
+            self.queue.put(self.getAccessToSpreadsheet)
         else:
             mat, exp_date = self.regexMatchBarcode(input_str)
             if mat != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.insert_row, values=[input_str]))
+                self.queue.put(dict(function=self.sheet.insert_row, values=[input_str]))  # whole barcode to the api queue
             new_row = self.composeNewRow(mat, exp_date)
             self.rotateListDown(new_row)
 
@@ -315,14 +343,14 @@ class BarcodeDisplay(QWidget):
 
 
 def main():
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    SPREADSHEET_KEY = config.get('SETTINGS', 'spreadsheet_key')
-    DESTINATION_SHEET = config.get('SETTINGS', 'destination_sheet')
-    BARCODE_PATTERN = config.get('SETTINGS', 'barcode_pattern') # class ignores case by default
+    # pattern ignores case by default
+    BARCODE_PATTERN = r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
+    SPREADSHEET_KEY = "1c0J8E4Z96jPnu2hqgwEEXzWmhldv-BHCU66rwUCrWw0"
+    # SPREADSHEET_KEY = "11Y3oufYpwWanKRB0KzxsrhkqErfPgak-LylKCt6a4i0" # test spreadsheet
+    SHEET_NAME_TO_SCAN = "Scan"
 
     app = QApplication(sys.argv)
-    _ = BarcodeDisplay(BARCODE_PATTERN, SPREADSHEET_KEY, DESTINATION_SHEET)
+    _ = BarcodeDisplay(BARCODE_PATTERN, SPREADSHEET_KEY, SHEET_NAME_TO_SCAN)
     sys.exit(app.exec_())
 
 
