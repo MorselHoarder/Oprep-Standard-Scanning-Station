@@ -31,7 +31,8 @@ from PyQt5.QtWidgets import (
     QApplication, 
     QLineEdit, 
     QLabel, 
-    QGridLayout, 
+    QGridLayout,
+    QMessageBox, 
     qApp
 )
 
@@ -41,6 +42,19 @@ logging.basicConfig(format=log_format,
                     handlers=[logging.FileHandler('errors.log')],
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+SCRIPT_VERSION = "1.0.0"
+QUEUE_DUMP_FILE = "queue_dump.json"
+QUEUE_ITEMS_KEY = "queue_items"
+
+
+class JSONEncoderWithFunctions(json.JSONEncoder):
+    def default(self, o):
+        if (callable(o)):
+            return o.__name__
+        else:
+            return json.JSONEncoder.default(self, o)
 
 
 class AccessSpreadsheetError(OSError):
@@ -101,6 +115,7 @@ class BarcodeDisplay(QWidget):
 
         # get initial access to spreadsheet
         self.queue.put(dict(function=self.getAccessToSpreadsheet, handler_wait_after=0))
+        self.readQueueFromJSON()
 
         self._refresh_spreadsheet_timer = QTimer()
         self._refresh_spreadsheet_timer.setInterval(60 * 60 * 1000) # every 1 hour in msecs
@@ -127,6 +142,7 @@ class BarcodeDisplay(QWidget):
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
         Sets `self.ss` and `self.sheet` variables for operations."""
+        # TODO fix this to look better
         if self.isConnected():
             try: 
                 gc = gspread.service_account(filename='credentials.json')
@@ -148,7 +164,6 @@ class BarcodeDisplay(QWidget):
                             self.sheet = self.ss.worksheet(self.destination_sheet)
                         else:
                             self.sheet = self.ss.sheet1
-                        print("Spreadsheet access successful")
                     except gspread.exceptions.WorksheetNotFound as e:
                         self.alert.setText(f"WORKSHEET {self.destination_sheet} NOT FOUND")
                         logger.error(f"Cannot find sheet named {self.destination_sheet}.")
@@ -165,14 +180,14 @@ class BarcodeDisplay(QWidget):
                 try:
                     function(*args, **kwargs)
                 except AccessSpreadsheetError as e:
-                    print("AccessSpreadsheetError")
-                    #TODO add handling / make dialog box for serious alerts
-                    self.restartApp()
+                    w = ("AccessSpreadsheetError raised. See errors.log for details."
+                        "\nRestarting app in 10 seconds.")
+                    self.restartApp(msg_warning=w)
                 except gspread.exceptions.APIError as e:
                     if API_error_count >= 5:
                         # TODO add serious error handling
                         logger.warning("API error count exceeded maximum tries.", exc_info=True)
-                        self.restartApp()
+                        self.restartApp(self.combineQueueItem(function, *args, **kwargs))
                     else:
                         API_error_count += 1
                     code = e.response.json()['error']['code']
@@ -193,7 +208,7 @@ class BarcodeDisplay(QWidget):
                 except Exception:
                     logger.error('Unexpected error with mainIOhandler function', 
                         exc_info=True)
-                    self.restartApp()
+                    self.restartApp(self.combineQueueItem(function, *args, **kwargs))
                 else: 
                     self.alert.setText("")
                     sleep(handler_wait_after) # to not max google api limits
@@ -246,7 +261,8 @@ class BarcodeDisplay(QWidget):
             # put the new widget at the (x,y) position
             self.grid.addWidget(label, *position)
 
-    def keyPressEvent(self, e):  # where the fun begins
+    def keyPressEvent(self, e):  
+        # where the fun begins
         # QT function that waits for an 'enter' keystroke
         if (e.key() == Qt.Key_Return) and (len(self.le.text()) > 0):
             input_str = self.le.text()
@@ -257,25 +273,25 @@ class BarcodeDisplay(QWidget):
     def handleInput(self, input_str):
         if input_str == "remove last barcode":
             if self.entries[0][0] != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.delete_rows, start_index=1))  # whole barcode to the api queue
+                self.queue.put(dict(function=self.sheet.delete_rows, start_index=1))
             self.rotateListUp()
         elif input_str == "retry connection":
             self.queue.put(self.getAccessToSpreadsheet)
         else:
             mat, exp_date = self.regexMatchBarcode(input_str)
             if mat != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.insert_row, values=[input_str]))  # whole barcode to the api queue
+                self.queue.put(dict(function=self.sheet.insert_row, values=[input_str]))
             new_row = self.composeNewRow(mat, exp_date)
             self.rotateListDown(new_row)
 
     def rotateListDown(self, new_row):
-        self.entries = new_row + self.entries  # add to top of list
-        del self.entries[-1]  # delete last row
+        self.entries = new_row + self.entries
+        del self.entries[-1]
         self.clearLayout()
         self.updateList()
 
     def rotateListUp(self):
-        del self.entries[0]  # delete first row
+        del self.entries[0]
         self.clearLayout()
         self.updateList()
 
@@ -325,18 +341,93 @@ class BarcodeDisplay(QWidget):
             if w:
                 w.deleteLater()
 
-    def restartApp(self, current_item=None, create_dialog=False):
-        do_restart = True
+    def combineQueueItem(self, function, *args, **kwargs):
+        if args:
+            return list(function, *args)
+        else:
+            return dict(kwargs, function=function)
+
+    def readQueueFromJSON(self):
+        "Gets any queue items from queue_dump.json and puts them into the queue."
+        try: 
+            with open(QUEUE_DUMP_FILE) as queue_dump:
+                data_dict = json.load(queue_dump)
+        except FileNotFoundError:
+            logger.info("No queue_dump.json file found.")
+            return
+        
+        for item in data_dict[QUEUE_ITEMS_KEY]:
+            if isinstance(item, dict):
+                func_name = item.get('function')
+                if func_name == 'self.sheet.insert_row':
+                    self.queue.put(dict(function=self.sheet.insert_row, 
+                                        values=item.get('values')))
+                elif func_name == 'self.sheet.delete_rows':
+                    self.queue.put(dict(function=self.sheet.delete_rows, 
+                                        start_index=item.get('start_index')))
+        
+        # clear old values
+        data_dict[QUEUE_ITEMS_KEY] = ''
+        with open(QUEUE_DUMP_FILE, "w") as queue_dump:
+            json.dump(data_dict, queue_dump, indent=2)
+
+    def dumpQueueToJSON(self, current_item=None):
+        "Puts every item left in the queue into json file"
+        data_dict = dict(version=SCRIPT_VERSION)
+
+        item_list = []
+        if current_item is not None:
+            item_list.append(current_item)
+
+        while (True):
+            try:
+                item = self.queue.get(block=False)
+            except queue.Empty:
+                break 
+            else:
+                item_list.append(item)
+
+        data_dict[QUEUE_ITEMS_KEY] = item_list
+        
+        with open(QUEUE_DUMP_FILE, "w") as queue_dump:
+            json.dump(data_dict, queue_dump, indent=2, cls=JSONEncoderWithFunctions)
+
+        logger.info("Queue dumped to JSON")
+
+    def msgbox(self, label_text=None, window_title="Alert", timer_length_secs=10):
+        """Creates a simple message dialog with cancel button that counts down.
+        If cancel or escape is pressed, returns False. Otherwise timeout returns True.
+        Leave `label_text` as `None` to use default text."""
+        mb = QMessageBox()
+        mb.setIcon(QMessageBox.Warning)
+
+        if label_text is None:
+            mb.setText("Scanning system has encountered an error."
+                       "\nRestarting app in 10 seconds.")
+        else:
+            mb.setText(label_text)
+
+        mb.setWindowTitle(window_title)
+        mb.setStandardButtons(QMessageBox.Cancel)
+        mb.setEscapeButton(QMessageBox.Cancel)
+        mb.buttonClicked.connect(mb.reject)
+        timer = QTimer.singleShot(timer_length_secs*1000, mb.accept)
+
+        if mb.exec() == 1:
+            return True
+        else:
+            return False
+
+    def restartApp(self, current_item=None, create_dialog=True, msg_warning=None):
+        
         if create_dialog:
-            # TODO add dialog question to ask if you want to restart
-            pass
+            if not self.msgbox(msg_warning): # cancel pressed
+                return
+
+        self.dumpQueueToJSON(current_item)
 
         logger.info("Restarting Scanning Station")
-        # TODO add dump queue to JSON
-
-        if do_restart:
-            QProcess.startDetached("python", sys.argv)
-
+        QProcess.startDetached("python", sys.argv)
         qApp.quit()
 
 
