@@ -24,5 +24,4 @@ scan = ss.worksheet('Scan')
 try:
     scan.insert_row("hello")
 except gspread.exceptions.APIError as e:
-    print(e.response.json()['error']['status'])
-    print(f"API rate limit exceeded. Retrying in 5 minutes. Cycle number: {API_error_count}")
+    print("API Error")

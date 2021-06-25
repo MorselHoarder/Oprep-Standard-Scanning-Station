@@ -12,7 +12,7 @@ from time import sleep
 import datetime as dt
 import configparser
 import queue
-import threading
+import traceback
 import socket
 import json
 import logging
@@ -22,8 +22,13 @@ from random import randint
 import gspread
 from PyQt5.QtCore import (
     Qt, 
+    QObject,
     QProcess,
-    QTimer
+    QTimer,
+    QRunnable,
+    QThreadPool,
+    pyqtSignal,
+    pyqtSlot
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
@@ -49,6 +54,10 @@ QUEUE_DUMP_FILE = "queue_dump.json"
 QUEUE_ITEMS_KEY = "queue_items"
 
 
+class AccessSpreadsheetError(OSError):
+    pass
+
+
 class JSONEncoderWithFunctions(json.JSONEncoder):
     def default(self, o):
         if (callable(o)):
@@ -57,8 +66,18 @@ class JSONEncoderWithFunctions(json.JSONEncoder):
             return json.JSONEncoder.default(self, o)
 
 
-class AccessSpreadsheetError(OSError):
-    pass
+class Worker(QRunnable):
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    @pyqtSlot()
+    def run(self):
+        self.fn(*self.args, **self.kwargs)
 
 
 class BarcodeDisplay(QWidget):
@@ -68,6 +87,9 @@ class BarcodeDisplay(QWidget):
         self.regex_pattern = regex_pattern
         self.spreadsheet_key = spreadsheet_key
         self.destination_sheet = destination_sheet
+
+        # TODO figure out how to dump queue to JSON when red X is pressed
+        # qApp.aboutToQuit.connect(self.closeEvent)
         
         self.initUI()
 
@@ -110,8 +132,11 @@ class BarcodeDisplay(QWidget):
         self.updateList()
 
         self.queue = queue.Queue()
+        self.threadpool = QThreadPool()
+
         self.stopIOthread = False
-        self.IOthread = threading.Thread(target=self.queueChecker, daemon=True).start()
+        self.IOthreadWorker = Worker(self.queueChecker)
+        self.threadpool.start(self.IOthreadWorker)
 
         # get initial access to spreadsheet
         self.queue.put(dict(function=self.getAccessToSpreadsheet, handler_wait_after=0))
@@ -142,32 +167,26 @@ class BarcodeDisplay(QWidget):
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
         Sets `self.ss` and `self.sheet` variables for operations."""
-        # TODO fix this to look better
-        if self.isConnected():
-            try: 
-                gc = gspread.service_account(filename='credentials.json')
-            except (FileNotFoundError, json.decoder.JSONDecodeError) as e:
-                self.alert.setText("SERVICE ACCOUNT FAILURE")
-                logger.error("Cannot access credentials and/or service account.", 
-                    exc_info=True)
-                raise AccessSpreadsheetError from e
-            else:
-                try:
-                    self.ss = gc.open_by_key(self.spreadsheet_key)
-                except TypeError as e:
-                    self.alert.setText("SPREADSHEET CONNECTION FAILURE")
-                    logger.error("Missing spreadsheet_key.", exc_info=True)
-                    raise AccessSpreadsheetError from e
-                else:
-                    try:
-                        if self.destination_sheet is not None:
-                            self.sheet = self.ss.worksheet(self.destination_sheet)
-                        else:
-                            self.sheet = self.ss.sheet1
-                    except gspread.exceptions.WorksheetNotFound as e:
-                        self.alert.setText(f"WORKSHEET {self.destination_sheet} NOT FOUND")
-                        logger.error(f"Cannot find sheet named {self.destination_sheet}.")
-                        raise AccessSpreadsheetError from e
+        try: 
+            gc = gspread.service_account(filename='credentials.json')
+            self.ss = gc.open_by_key(self.spreadsheet_key)
+            self.sheet = self.ss.worksheet(self.destination_sheet)
+            return
+
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
+            self.alert.setText("SERVICE ACCOUNT FAILURE")
+            logger.error("Cannot access credentials and/or service account.", 
+                exc_info=True)
+
+        except TypeError:
+            self.alert.setText("SPREADSHEET CONNECTION FAILURE")
+            logger.error("Missing spreadsheet_key.", exc_info=True)
+
+        except gspread.exceptions.WorksheetNotFound:
+            self.alert.setText(f"WORKSHEET {self.destination_sheet} NOT FOUND")
+            logger.error(f"Cannot find sheet named {self.destination_sheet}.")
+        
+        raise AccessSpreadsheetError
 
     def mainIOhandler(self, function, *args, handler_wait_after=4, **kwargs):
         """Calls `function` with provided arguments.
@@ -176,13 +195,17 @@ class BarcodeDisplay(QWidget):
         Use `handler_wait_after` to define how long to sleep after successful finish."""
         API_error_count = 0
         while (True):
-            if self.isConnected() is True:
+            if self.isConnected():
                 try:
                     function(*args, **kwargs)
+                    # TODO need to test exception handling
+                    # raise AccessSpreadsheetError
+
                 except AccessSpreadsheetError as e:
                     w = ("AccessSpreadsheetError raised. See errors.log for details."
                         "\nRestarting app in 10 seconds.")
                     self.restartApp(msg_warning=w)
+
                 except gspread.exceptions.APIError as e:
                     if API_error_count >= 5:
                         # TODO add serious error handling
@@ -190,35 +213,41 @@ class BarcodeDisplay(QWidget):
                         self.restartApp(self.combineQueueItem(function, *args, **kwargs))
                     else:
                         API_error_count += 1
+
                     code = e.response.json()['error']['code']
                     message = e.response.json()['error']['message']
                     self.alert.setText(f"{str(code)}: {str(message)}")
                     random_int = randint(1, 120)
+
                     if (code == 429):                      
                         logger.warning("API rate limit exceeded. %s", 
-                            f"Retrying in {5*API_error_count+(random_int/60)} minutes.")
+                            f"Retrying in {5*API_error_count+(random_int/60):.2f} minutes.")
                         sleep(300*API_error_count+random_int)
                     else:
-                        logger.error("Unhandled API Error. \n%s %s \n%s", 
+                        logger.error(f"API Error {str(code)}: {str(message)}. \n%s %s \n%s", 
                             "The following command was not executed:",
                             f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            f"Retrying command in {10+(random_int/60)} minutes.",
+                            f"Retrying command in {10+(random_int/60):.2f} minutes.",
                             exc_info=True)
                         sleep(600+random_int)
+
                 except Exception:
                     logger.error('Unexpected error with mainIOhandler function', 
                         exc_info=True)
                     self.restartApp(self.combineQueueItem(function, *args, **kwargs))
+
                 else: 
                     self.alert.setText("")
                     sleep(handler_wait_after) # to not max google api limits
                     return
+                    
             else:
+                self.alert.setText("NO INTERNET CONNECTION")
                 random_int = randint(1, 120)
                 logger.warning("Cannot reach internet. \n%s %s \n%s", 
                             "The following command was not executed:",
                             f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            f"Retrying connection in {10+(random_int/60)} minutes.")
+                            f"Retrying connection in {10+(random_int/60):.2f} minutes.")
                 sleep(600+random_int)
 
     def queueChecker(self): 
@@ -398,6 +427,7 @@ class BarcodeDisplay(QWidget):
         """Creates a simple message dialog with cancel button that counts down.
         If cancel or escape is pressed, returns False. Otherwise timeout returns True.
         Leave `label_text` as `None` to use default text."""
+        # TODO get this to spawn on main thread
         mb = QMessageBox()
         mb.setIcon(QMessageBox.Warning)
 
@@ -420,6 +450,8 @@ class BarcodeDisplay(QWidget):
 
     def restartApp(self, current_item=None, create_dialog=True, msg_warning=None):
         
+        # TODO dialog needs to spawn from main thread to work
+        # get restart to work with aboutToQuit and closeEvents
         if create_dialog:
             if not self.msgbox(msg_warning): # cancel pressed
                 return

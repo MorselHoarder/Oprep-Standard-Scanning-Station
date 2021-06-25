@@ -29,3 +29,14 @@
 # config["SETTINGS"]["first_row"] = "2"
 
 # print(config["SETTINGS"]["first_row"])
+def dothing():
+    try:
+        1/0
+        print("try block")
+        return
+    except ZeroDivisionError:
+        print("Exception handled")
+    
+    raise ZeroDivisionError("This was raised outside the try/except block.")
+
+dothing()

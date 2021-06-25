@@ -8,5 +8,5 @@ logger = logging.getLogger(__name__)
 try:
     1/0
 except:
-    logger.warning('Unexpected Error %s', 'another line', exc_info=1)
+    logger.warning(f'Unexpected Error {1/2} %s', 'another line', exc_info=1)
 
