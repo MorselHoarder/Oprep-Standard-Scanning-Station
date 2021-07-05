@@ -134,7 +134,7 @@ class BarcodeDisplay(QWidget):
         self.queue = queue.Queue()
         self.threadpool = QThreadPool()
 
-        self.stopIOthread = False
+        self._stopIOthread = False
         self.IOthreadWorker = Worker(self.queueChecker)
         self.threadpool.start(self.IOthreadWorker)
 
@@ -199,7 +199,7 @@ class BarcodeDisplay(QWidget):
                 try:
                     function(*args, **kwargs)
                     # TODO need to test exception handling
-                    # raise AccessSpreadsheetError
+                    raise AccessSpreadsheetError
 
                 except AccessSpreadsheetError as e:
                     w = ("AccessSpreadsheetError raised. See errors.log for details."
@@ -250,6 +250,9 @@ class BarcodeDisplay(QWidget):
                             f"Retrying connection in {10+(random_int/60):.2f} minutes.")
                 sleep(600+random_int)
 
+            if self._stopIOthread:
+                break
+
     def queueChecker(self): 
         """threaded function that checks queue and pushes items to the handler."""
         while (True):
@@ -265,7 +268,7 @@ class BarcodeDisplay(QWidget):
                     logger.warning('Item of wrong type added to queue: %s of type %s', 
                         str(item), type(item))
 
-            if self.stopIOthread:
+            if self._stopIOthread:
                 break
 
             sleep(0.005) #free CPU briefly
@@ -298,6 +301,21 @@ class BarcodeDisplay(QWidget):
             self.le.clear()
             self.display.setText('"'+input_str+'"')
             self.handleInput(input_str)
+    
+    def closeEvent(self, event) -> None:
+        print("close event emitted")
+
+        # TODO add handling for _current_item and _msg_warning
+        if not self.msgbox(self._msg_warning): # cancel pressed
+            return
+
+        self._stopAllThreads()
+
+        if self._restartApp:
+            logger.info("Restarting Scanning Station")
+            QProcess.startDetached("python", sys.argv)
+
+        return event.accept()
 
     def handleInput(self, input_str):
         if input_str == "remove last barcode":
@@ -423,7 +441,7 @@ class BarcodeDisplay(QWidget):
 
         logger.info("Queue dumped to JSON")
 
-    def msgbox(self, label_text=None, window_title="Alert", timer_length_secs=10):
+    def msgbox(self, label_text=None, window_title="Alert", timer_length_secs=5):
         """Creates a simple message dialog with cancel button that counts down.
         If cancel or escape is pressed, returns False. Otherwise timeout returns True.
         Leave `label_text` as `None` to use default text."""
@@ -432,8 +450,8 @@ class BarcodeDisplay(QWidget):
         mb.setIcon(QMessageBox.Warning)
 
         if label_text is None:
-            mb.setText("Scanning system has encountered an error."
-                       "\nRestarting app in 10 seconds.")
+            mb.setText("Scanning system has encountered an error and needs to close."
+                       "\nRestarting application.")
         else:
             mb.setText(label_text)
 
@@ -448,19 +466,20 @@ class BarcodeDisplay(QWidget):
         else:
             return False
 
-    def restartApp(self, current_item=None, create_dialog=True, msg_warning=None):
-        
-        # TODO dialog needs to spawn from main thread to work
-        # get restart to work with aboutToQuit and closeEvents
-        if create_dialog:
-            if not self.msgbox(msg_warning): # cancel pressed
-                return
+    def _stopAllThreads(self):
+        self._stopIOthread = True
+        self._refresh_spreadsheet_timer.stop()
+        self.threadpool.waitForDone(msecs=100)
 
-        self.dumpQueueToJSON(current_item)
+    def restartApp(self, current_item=None, msg_warning=None):
+        # to be called from IOthread in extenuating circumstances
+        self._current_item = current_item
+        self._msg_warning = msg_warning
 
-        logger.info("Restarting Scanning Station")
-        QProcess.startDetached("python", sys.argv)
-        qApp.quit()
+        self._stopIOthread = True
+        self._restartApp = True
+
+        qApp.close()
 
 
 def main():
