@@ -54,6 +54,18 @@ QUEUE_DUMP_FILE = "queue_dump.json"
 QUEUE_ITEMS_KEY = "queue_items"
 
 
+def isConnected():
+    """Detects an internet connection."""
+    try:
+        conn = socket.create_connection(("1.1.1.1", 80))
+        if conn is not None:
+            conn.close
+        return True
+    except OSError:
+        pass
+    return False
+
+
 class AccessSpreadsheetError(OSError):
     pass
 
@@ -65,19 +77,117 @@ class JSONEncoderWithFunctions(json.JSONEncoder):
         else:
             return json.JSONEncoder.default(self, o)
 
+class WorkerSignals(QObject):
+    """This class holds the signals for QRunnable child classes
+    in order for them to be able to emit signals."""
+    finished = pyqtSignal()
 
-class Worker(QRunnable):
 
-    def __init__(self, fn, *args, **kwargs):
+class QueueWorker(QRunnable):
+
+    def __init__(self, queue):
         super().__init__()
 
-        self.fn = fn
-        self.args = args
-        self.kwargs = kwargs
+        self.queue = queue
+
+        self.signals = WorkerSignals()
+
+        self._stopIOthread = False
+
+    def queueChecker(self): 
+        """Looping function that checks queue and pushes items to the handler."""
+        while (True):
+            if (self.queue.qsize() > 0):
+                item = self.queue.get()
+                if callable(item):
+                    self.mainIOhandler(item)
+                elif isinstance(item, dict):
+                    self.mainIOhandler(**item)
+                elif isinstance(item, (tuple, list)):
+                    self.mainIOhandler(*item)
+                else:
+                    logger.warning('Item of wrong type added to queue: %s of type %s', 
+                        str(item), type(item))
+
+            if self._stopIOthread:
+                break
+
+            sleep(0.005) #free CPU briefly
+
+    def mainIOhandler(self, function, *args, handler_wait_after=4, **kwargs):
+        """Calls `function` with provided arguments.
+        Main function for interacting with spreadsheet or other IO operations.
+        Handles exceptions and API errors.
+        Use `handler_wait_after` to define how long to sleep after successful finish."""
+        API_error_count = 0
+        while (True):
+            if isConnected():
+                try:
+                    function(*args, **kwargs)
+                    # TODO need to test exception handling
+
+                except AccessSpreadsheetError as e:
+                    w = ("AccessSpreadsheetError raised. See errors.log for details."
+                        "\nRestarting app in 10 seconds.")
+                    self.shutdownWorker(msg_warning=w)
+
+                except gspread.exceptions.APIError as e:
+                    if API_error_count >= 5:
+                        # TODO add serious error handling
+                        logger.warning("API error count exceeded maximum tries.", exc_info=True)
+                        self.shutdownWorker(self.combineQueueItem(function, *args, **kwargs))
+                    else:
+                        API_error_count += 1
+
+                    code = e.response.json()['error']['code']
+                    message = e.response.json()['error']['message']
+
+                    random_int = randint(1, 120)
+
+                    if (code == 429):                      
+                        logger.warning("API rate limit exceeded. %s", 
+                            f"Retrying in {5*API_error_count+(random_int/60):.2f} minutes.")
+                        sleep(300*API_error_count+random_int)
+                    else:
+                        logger.error(f"API Error {str(code)}: {str(message)}. \n%s %s \n%s", 
+                            "The following command was not executed:",
+                            f"'{function.__name__}' with arguments: {args} {kwargs}",
+                            f"Retrying command in {10+(random_int/60):.2f} minutes.",
+                            exc_info=True)
+                        sleep(600+random_int)
+
+                except Exception:
+                    logger.error('Unexpected error with mainIOhandler function', 
+                        exc_info=True)
+                    self.shutdownWorker(self.combineQueueItem(function, *args, **kwargs))
+
+                else: 
+                    sleep(handler_wait_after) # to not max google api limits
+                    return
+                    
+            else:
+                random_int = randint(1, 120)
+                logger.warning("Cannot reach internet. \n%s %s \n%s", 
+                            "The following command was not executed:",
+                            f"'{function.__name__}' with arguments: {args} {kwargs}",
+                            f"Retrying connection in {10+(random_int/60):.2f} minutes.")
+                sleep(600+random_int)
+
+            if self._stopIOthread:
+                break
+
+    def shutdownWorker(self, current_queue_item=None):
+        self.kill()
+        # TODO add handling for current item with error
+
+    @pyqtSlot()
+    def kill(self):
+        self._stopIOthread = True
 
     @pyqtSlot()
     def run(self):
-        self.fn(*self.args, **self.kwargs)
+        self.queueChecker()
+        self.signals.finished.emit()
 
 
 class BarcodeDisplay(QWidget):
@@ -88,8 +198,7 @@ class BarcodeDisplay(QWidget):
         self.spreadsheet_key = spreadsheet_key
         self.destination_sheet = destination_sheet
 
-        # TODO figure out how to dump queue to JSON when red X is pressed
-        # qApp.aboutToQuit.connect(self.closeEvent)
+        qApp.aboutToQuit.connect(self._cleanupRoutine)
         
         self.initUI()
 
@@ -131,19 +240,22 @@ class BarcodeDisplay(QWidget):
         self.entries = [['' for y in range(3)] for x in range(20)]
         self.updateList()
 
+        # TODO change this queue to a deque for appending functionality
         self.queue = queue.Queue()
         self.threadpool = QThreadPool()
 
-        self._stopIOthread = False
-        self.IOthreadWorker = Worker(self.queueChecker)
+        self.IOthreadWorker = QueueWorker(self.queue)
+        self.IOthreadWorker.signals.finished.connect(self.close)
         self.threadpool.start(self.IOthreadWorker)
 
         # get initial access to spreadsheet
-        self.queue.put(dict(function=self.getAccessToSpreadsheet, handler_wait_after=0))
-        self.readQueueFromJSON()
+        self.queue.put(dict(function=self.getAccessToSpreadsheet))
+
+        # TODO get this to read properly, needs self.sheet populated. 
+        # self.readQueueFromJSON()
 
         self._refresh_spreadsheet_timer = QTimer()
-        self._refresh_spreadsheet_timer.setInterval(60 * 60 * 1000) # every 1 hour in msecs
+        self._refresh_spreadsheet_timer.setInterval(10 * 60 * 1000) # every 10 minutes in msecs
         self._refresh_spreadsheet_timer.timeout.connect(self._refreshSpreadsheet)
         self._refresh_spreadsheet_timer.start()
 
@@ -151,18 +263,6 @@ class BarcodeDisplay(QWidget):
 
         # self.show()
         self.showMaximized() # displays the window at full res
-
-    @staticmethod
-    def isConnected():
-        """Detects an internet connection."""
-        try:
-            conn = socket.create_connection(("1.1.1.1", 80))
-            if conn is not None:
-                conn.close
-            return True
-        except OSError:
-            pass
-        return False
 
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
@@ -187,91 +287,6 @@ class BarcodeDisplay(QWidget):
             logger.error(f"Cannot find sheet named {self.destination_sheet}.")
         
         raise AccessSpreadsheetError
-
-    def mainIOhandler(self, function, *args, handler_wait_after=4, **kwargs):
-        """Calls `function` with provided arguments.
-        Main function for interacting with spreadsheet or other IO operations.
-        Handles exceptions and API errors.
-        Use `handler_wait_after` to define how long to sleep after successful finish."""
-        API_error_count = 0
-        while (True):
-            if self.isConnected():
-                try:
-                    function(*args, **kwargs)
-                    # TODO need to test exception handling
-                    raise AccessSpreadsheetError
-
-                except AccessSpreadsheetError as e:
-                    w = ("AccessSpreadsheetError raised. See errors.log for details."
-                        "\nRestarting app in 10 seconds.")
-                    self.restartApp(msg_warning=w)
-
-                except gspread.exceptions.APIError as e:
-                    if API_error_count >= 5:
-                        # TODO add serious error handling
-                        logger.warning("API error count exceeded maximum tries.", exc_info=True)
-                        self.restartApp(self.combineQueueItem(function, *args, **kwargs))
-                    else:
-                        API_error_count += 1
-
-                    code = e.response.json()['error']['code']
-                    message = e.response.json()['error']['message']
-                    self.alert.setText(f"{str(code)}: {str(message)}")
-                    random_int = randint(1, 120)
-
-                    if (code == 429):                      
-                        logger.warning("API rate limit exceeded. %s", 
-                            f"Retrying in {5*API_error_count+(random_int/60):.2f} minutes.")
-                        sleep(300*API_error_count+random_int)
-                    else:
-                        logger.error(f"API Error {str(code)}: {str(message)}. \n%s %s \n%s", 
-                            "The following command was not executed:",
-                            f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            f"Retrying command in {10+(random_int/60):.2f} minutes.",
-                            exc_info=True)
-                        sleep(600+random_int)
-
-                except Exception:
-                    logger.error('Unexpected error with mainIOhandler function', 
-                        exc_info=True)
-                    self.restartApp(self.combineQueueItem(function, *args, **kwargs))
-
-                else: 
-                    self.alert.setText("")
-                    sleep(handler_wait_after) # to not max google api limits
-                    return
-                    
-            else:
-                self.alert.setText("NO INTERNET CONNECTION")
-                random_int = randint(1, 120)
-                logger.warning("Cannot reach internet. \n%s %s \n%s", 
-                            "The following command was not executed:",
-                            f"'{function.__name__}' with arguments: {args} {kwargs}",
-                            f"Retrying connection in {10+(random_int/60):.2f} minutes.")
-                sleep(600+random_int)
-
-            if self._stopIOthread:
-                break
-
-    def queueChecker(self): 
-        """threaded function that checks queue and pushes items to the handler."""
-        while (True):
-            if (self.queue.qsize() > 0):
-                item = self.queue.get()
-                if callable(item):
-                    self.mainIOhandler(item)
-                elif isinstance(item, dict):
-                    self.mainIOhandler(**item)
-                elif isinstance(item, (tuple, list)):
-                    self.mainIOhandler(*item)
-                else:
-                    logger.warning('Item of wrong type added to queue: %s of type %s', 
-                        str(item), type(item))
-
-            if self._stopIOthread:
-                break
-
-            sleep(0.005) #free CPU briefly
 
     def _refreshSpreadsheet(self):
         """To be called by `_refresh_spreadsheet_timer`.
@@ -301,21 +316,6 @@ class BarcodeDisplay(QWidget):
             self.le.clear()
             self.display.setText('"'+input_str+'"')
             self.handleInput(input_str)
-    
-    def closeEvent(self, event) -> None:
-        print("close event emitted")
-
-        # TODO add handling for _current_item and _msg_warning
-        if not self.msgbox(self._msg_warning): # cancel pressed
-            return
-
-        self._stopAllThreads()
-
-        if self._restartApp:
-            logger.info("Restarting Scanning Station")
-            QProcess.startDetached("python", sys.argv)
-
-        return event.accept()
 
     def handleInput(self, input_str):
         if input_str == "remove last barcode":
@@ -406,10 +406,10 @@ class BarcodeDisplay(QWidget):
         for item in data_dict[QUEUE_ITEMS_KEY]:
             if isinstance(item, dict):
                 func_name = item.get('function')
-                if func_name == 'self.sheet.insert_row':
+                if func_name == 'insert_row':
                     self.queue.put(dict(function=self.sheet.insert_row, 
                                         values=item.get('values')))
-                elif func_name == 'self.sheet.delete_rows':
+                elif func_name == 'delete_rows':
                     self.queue.put(dict(function=self.sheet.delete_rows, 
                                         start_index=item.get('start_index')))
         
@@ -451,7 +451,8 @@ class BarcodeDisplay(QWidget):
 
         if label_text is None:
             mb.setText("Scanning system has encountered an error and needs to close."
-                       "\nRestarting application.")
+                       "\nPreviously scanned barcodes will be remembered upon restart."
+                       "\nDO NOT RESCAN OLD BARCODES.")
         else:
             mb.setText(label_text)
 
@@ -461,25 +462,31 @@ class BarcodeDisplay(QWidget):
         mb.buttonClicked.connect(mb.reject)
         timer = QTimer.singleShot(timer_length_secs*1000, mb.accept)
 
+        # TODO cancel doesn't work still. Maybe take it out?
         if mb.exec() == 1:
             return True
         else:
             return False
 
     def _stopAllThreads(self):
-        self._stopIOthread = True
+        self.IOthreadWorker.kill()
         self._refresh_spreadsheet_timer.stop()
         self.threadpool.waitForDone(msecs=100)
 
-    def restartApp(self, current_item=None, msg_warning=None):
-        # to be called from IOthread in extenuating circumstances
-        self._current_item = current_item
-        self._msg_warning = msg_warning
+    def closeEvent(self, event) -> None:
+        print("close event emitted")
 
-        self._stopIOthread = True
-        self._restartApp = True
+        # TODO add handling for _current_item and _msg_warning
+        if not self.msgbox(): # cancel pressed
+            return
 
-        qApp.close()
+        return event.accept()
+
+    def _cleanupRoutine(self) -> None:
+        self._stopAllThreads()
+        self.dumpQueueToJSON()
+
+
 
 
 def main():

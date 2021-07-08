@@ -1,12 +1,14 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QMainWindow, QMessageBox
+from PyQt5.QtWidgets import QMainWindow, QMessageBox, QWidget, qApp
+from time import sleep
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QWidget):
 
    def __init__(self):
       super().__init__()
       self.setupUI()
+
 
    def setupUI(self):
       self.setObjectName("MainWindow")
@@ -18,6 +20,8 @@ class MainWindow(QMainWindow):
       font.setPointSize(9)
       self.setFont(font)
 
+      qApp.aboutToQuit.connect(self.cleanupStuff)
+
 
    def closeEvent(self, event):
       reply = QMessageBox.question(self, 'Quit', 'Are You Sure to Quit?', QMessageBox.No | QMessageBox.Yes)
@@ -25,6 +29,12 @@ class MainWindow(QMainWindow):
          event.accept()
       else:
          event.ignore()
+      print("closeEvent finished")
+
+   def cleanupStuff(self):
+      print("doing cleanup stuff")
+      sleep(2)
+      print("cleanup finished")
 
 
 if __name__ == "__main__":
@@ -33,3 +43,4 @@ if __name__ == "__main__":
    mw = MainWindow()
    mw.show()
    sys.exit(app.exec_())
+   
