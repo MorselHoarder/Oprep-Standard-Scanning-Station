@@ -1,0 +1,4 @@
+
+
+class AccessSpreadsheetError(OSError):
+    pass
