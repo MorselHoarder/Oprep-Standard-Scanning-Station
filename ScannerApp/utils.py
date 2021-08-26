@@ -1,18 +1,6 @@
-import datetime as dt
 import socket
 import json
 
-
-def formatDateGroup(date_str: str) -> str:
-    if (len(date_str) == 5):  # to account for early bug where date was 5 digits
-        ls = list(date_str)
-        ls.insert(2, "0")
-        date_str = "".join(ls)
-    d = dt.datetime.strptime(date_str, "%m%d%y")
-    return d.strftime('%m/%d/%Y')
-
-def getTimeStamp(dt: dt.datetime) -> str:
-    return dt.strftime('%m/%d/%y %H:%M')
 
 def isConnected():
     """Detects an internet connection."""

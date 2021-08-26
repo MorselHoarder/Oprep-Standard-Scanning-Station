@@ -1,0 +1,5 @@
+
+a = object()
+
+print(**a)
+

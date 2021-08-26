@@ -2,5 +2,5 @@
 errors.log
 credentials.json
 config.ini
-queue_dump.json
+deque_dump.json
 __pycache__

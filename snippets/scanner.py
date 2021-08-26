@@ -7,16 +7,9 @@ Website: zetcode.com
 
 # stdlib
 import sys
-import re
-from time import sleep
-import datetime as dt
 import configparser
-import queue
-import traceback
-import socket
+from collections import deque
 import json
-import logging
-from random import randint
 
 # other files
 from ScannerApp.utils import (
@@ -24,7 +17,7 @@ from ScannerApp.utils import (
     getTimeStamp, 
     isConnected, 
     JSONEncoderWithFunctions)
-from ScannerApp.api import QueueWorker
+from ScannerApp.api import DequeWorker
 from ScannerApp.barcode import OrganicPrepStandardBarcode
 from ScannerApp.logger import logger
 from ScannerApp.exceptions import AccessSpreadsheetError
@@ -53,8 +46,8 @@ from PyQt5.QtWidgets import (
 
 
 SCRIPT_VERSION = "1.0.0"
-QUEUE_DUMP_FILE = "queue_dump.json"
-QUEUE_ITEMS_KEY = "queue_items"
+DEQUE_DUMP_FILE = "deque_dump.json"
+DEQUE_ITEMS_KEY = "deque_items"
 
 
 class BarcodeDisplay(QWidget):
@@ -107,26 +100,26 @@ class BarcodeDisplay(QWidget):
         self.entries = [['' for y in range(3)] for x in range(20)]
         self.updateList()
 
-        # TODO change this queue to a deque for appending functionality
-        self.queue = queue.Queue()
+        # TODO change this deque to a deque for appending functionality
+        self.deque = deque.Deque()
         self.threadpool = QThreadPool()
 
-        self.IOthreadWorker = QueueWorker(self.queue)
+        self.IOthreadWorker = DequeWorker(self.deque)
         self.IOthreadWorker.signals.finished.connect(self.close)
         self.threadpool.start(self.IOthreadWorker)
 
         # get initial access to spreadsheet
-        self.queue.put(dict(function=self.getAccessToSpreadsheet))
+        self.deque.put(dict(function=self.getAccessToSpreadsheet))
 
         # TODO get this to read properly, needs self.sheet populated. 
-        # self.readQueueFromJSON()
+        # self.readDequeFromJSON()
 
         self._refresh_spreadsheet_timer = QTimer()
         self._refresh_spreadsheet_timer.setInterval(10 * 60 * 1000) # every 10 minutes in msecs
         self._refresh_spreadsheet_timer.timeout.connect(self._refreshSpreadsheet)
         self._refresh_spreadsheet_timer.start()
 
-        self.compiled_pattern = re.compile(self.regex_pattern, flags=re.IGNORECASE)
+
 
         # self.show()
         self.showMaximized() # displays the window at full res
@@ -157,8 +150,8 @@ class BarcodeDisplay(QWidget):
 
     def _refreshSpreadsheet(self):
         """To be called by `_refresh_spreadsheet_timer`.
-        Puts `getAccessToSpreadsheet` into queue."""
-        self.queue.put(dict(function=self.getAccessToSpreadsheet))
+        Puts `getAccessToSpreadsheet` into deque."""
+        self.deque.put(dict(function=self.getAccessToSpreadsheet))
 
     def updateList(self): 
         # updates the list UI
@@ -187,14 +180,14 @@ class BarcodeDisplay(QWidget):
     def handleInput(self, input_str):
         if input_str == "remove last barcode":
             if self.entries[0][0] != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.delete_rows, start_index=1))
+                self.deque.put(dict(function=self.sheet.delete_rows, start_index=1))
             self.rotateListUp()
         elif input_str == "retry connection":
-            self.queue.put(self.getAccessToSpreadsheet)
+            self.deque.put(self.getAccessToSpreadsheet)
         else:
             mat, exp_date = self.regexMatchBarcode(input_str)
             if mat != "Invalid Barcode!":
-                self.queue.put(dict(function=self.sheet.insert_row, values=[input_str]))
+                self.deque.put(dict(function=self.sheet.insert_row, values=[input_str]))
             new_row = self.composeNewRow(mat, exp_date)
             self.rotateListDown(new_row)
 
@@ -208,16 +201,6 @@ class BarcodeDisplay(QWidget):
         del self.entries[0]
         self.clearLayout()
         self.updateList()
-
-    def regexMatchBarcode(self, barcode):
-        m = self.compiled_pattern.fullmatch(barcode)
-        if m:
-            mat = m.group(1)
-            exp_date = formatDateGroup(m.group(2))
-        else:
-            mat = "Invalid Barcode!"
-            exp_date = "This barcode is not from a prepped standard."
-        return mat, exp_date
 
     def composeNewRow(self, id_std, exp_date):
         if id_std == "Invalid Barcode!":
@@ -240,38 +223,38 @@ class BarcodeDisplay(QWidget):
             if w:
                 w.deleteLater()
 
-    def combineQueueItem(self, function, *args, **kwargs):
+    def combineDequeItem(self, function, *args, **kwargs):
         if args:
             return list(function, *args)
         else:
             return dict(kwargs, function=function)
 
-    def readQueueFromJSON(self):
-        "Gets any queue items from queue_dump.json and puts them into the queue."
+    def readDequeFromJSON(self):
+        "Gets any deque items from deque_dump.json and puts them into the deque."
         try: 
-            with open(QUEUE_DUMP_FILE) as queue_dump:
-                data_dict = json.load(queue_dump)
+            with open(DEQUE_DUMP_FILE) as deque_dump:
+                data_dict = json.load(deque_dump)
         except FileNotFoundError:
-            logger.info("No queue_dump.json file found.")
+            logger.info("No deque_dump.json file found.")
             return
         
-        for item in data_dict[QUEUE_ITEMS_KEY]:
+        for item in data_dict[DEQUE_ITEMS_KEY]:
             if isinstance(item, dict):
                 func_name = item.get('function')
                 if func_name == 'insert_row':
-                    self.queue.put(dict(function=self.sheet.insert_row, 
+                    self.deque.put(dict(function=self.sheet.insert_row, 
                                         values=item.get('values')))
                 elif func_name == 'delete_rows':
-                    self.queue.put(dict(function=self.sheet.delete_rows, 
+                    self.deque.put(dict(function=self.sheet.delete_rows, 
                                         start_index=item.get('start_index')))
         
         # clear old values
-        data_dict[QUEUE_ITEMS_KEY] = ''
-        with open(QUEUE_DUMP_FILE, "w") as queue_dump:
-            json.dump(data_dict, queue_dump, indent=2)
+        data_dict[DEQUE_ITEMS_KEY] = ''
+        with open(DEQUE_DUMP_FILE, "w") as deque_dump:
+            json.dump(data_dict, deque_dump, indent=2)
 
-    def dumpQueueToJSON(self, current_item=None):
-        "Puts every item left in the queue into json file"
+    def dumpDequeToJSON(self, current_item=None):
+        "Puts every item left in the deque into json file"
         data_dict = dict(version=SCRIPT_VERSION)
 
         item_list = []
@@ -280,18 +263,18 @@ class BarcodeDisplay(QWidget):
 
         while (True):
             try:
-                item = self.queue.get(block=False)
-            except queue.Empty:
+                item = self.deque.get(block=False)
+            except deque.Empty:
                 break 
             else:
                 item_list.append(item)
 
-        data_dict[QUEUE_ITEMS_KEY] = item_list
+        data_dict[DEQUE_ITEMS_KEY] = item_list
         
-        with open(QUEUE_DUMP_FILE, "w") as queue_dump:
-            json.dump(data_dict, queue_dump, indent=2, cls=JSONEncoderWithFunctions)
+        with open(DEQUE_DUMP_FILE, "w") as deque_dump:
+            json.dump(data_dict, deque_dump, indent=2, cls=JSONEncoderWithFunctions)
 
-        logger.info("Queue dumped to JSON")
+        logger.info("Deque dumped to JSON")
 
     def msgbox(self, label_text=None, window_title="Alert", timer_length_secs=5):
         """Creates a simple message dialog with cancel button that counts down.
@@ -336,14 +319,11 @@ class BarcodeDisplay(QWidget):
 
     def _cleanupRoutine(self) -> None:
         self._stopAllThreads()
-        self.dumpQueueToJSON()
-
+        self.dumpDequeToJSON()
 
 
 
 def main():
-    # pattern ignores case by default
-    BARCODE_PATTERN = r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
     # SPREADSHEET_KEY = "1c0J8E4Z96jPnu2hqgwEEXzWmhldv-BHCU66rwUCrWw0"
     SPREADSHEET_KEY = "11Y3oufYpwWanKRB0KzxsrhkqErfPgak-LylKCt6a4i0" # test spreadsheet
     SHEET_NAME_TO_SCAN = "Scan"
