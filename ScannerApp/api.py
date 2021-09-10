@@ -3,10 +3,9 @@ from collections import deque
 import json
 from threading import Event
 
-from .utils import isConnected
-from .exceptions import AccessSpreadsheetError
-from .logger import logger
-from .barcode import BaseBarcodeScan
+from ScannerApp.utils import isConnected
+from ScannerApp.exceptions import AccessSpreadsheetError
+from ScannerApp.logger import logger
 
 import gspread
 from PyQt5.QtWidgets import qApp
@@ -20,6 +19,8 @@ from PyQt5.QtCore import (
 
 
 DEFAULT_SLEEP_SECS = 300.0
+MAX_API_TRIES = 5
+REFRESH_TIMER_LENGTH_SECS = 600
 
 
 class GSpreadWorker(QObject):
@@ -29,8 +30,6 @@ class GSpreadWorker(QObject):
         super().__init__()
 
         self.deque = deque
-
-        self.finished = pyqtSignal()
 
         self._stopIOthread = False
         self._itemFinished = False
@@ -52,6 +51,7 @@ class GSpreadWorker(QObject):
                 else:
                     logger.warning('Item of wrong type added to queue: %s of type %s', 
                         str(item), type(item))
+                    self._itemFinished = True
 
             if self._stopIOthread:
                 if not self._itemFinished:
@@ -73,12 +73,12 @@ class GSpreadWorker(QObject):
                     # TODO need to test exception handling
 
                 except AccessSpreadsheetError:
-                    logger.error("API error count exceeded maximum tries.", 
+                    logger.error("Unexpected error when accessing spreadsheet.", 
                         exc_info=True)
                     self.kill()
 
                 except gspread.exceptions.APIError:
-                    if API_error_count >= 5:
+                    if API_error_count >= MAX_API_TRIES:
                         logger.error("API error count exceeded maximum tries.", 
                             exc_info=True)
                         self.kill()
@@ -90,11 +90,12 @@ class GSpreadWorker(QObject):
                     self._wait(DEFAULT_SLEEP_SECS+60)
 
                 except Exception:
-                    logger.error('Unexpected error with mainIOhandler function', 
+                    logger.error('Unexpected error with mainIOhandler function.', 
                         exc_info=True)
                     self.kill()
 
                 else: 
+                    print("api call finished:", str(gs_function))
                     self._itemFinished = True
                     self._wait(handler_wait_after) # to not max google api limits
                     return
@@ -124,8 +125,8 @@ class GSpreadWorker(QObject):
 
     @pyqtSlot()
     def run(self):
+        print("thread started")
         self.dequeChecker()
-        self.signals.finished.emit()
 
 
 class GSpreadAPIHandler:
@@ -136,32 +137,73 @@ class GSpreadAPIHandler:
         self.sheet_name = sheet_name
 
         self.deque = deque()
-        self.addItem(dict(function=self.getAccessToSpreadsheet,
-                          handler_wait_after=0))
+        self.addItem("getAccessToSpreadsheet")
         
         self.thread = QThread()
         self.worker = GSpreadWorker(self.deque)
-        self.worker.finished.connect(self.shutdownApp)
         self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.shutdownApp)
         self.thread.start()
 
         self.refreshSpreadsheetTimer = QTimer()
-        self.refreshSpreadsheetTimer.setInterval(10 * 60 * 1000) # every 10 minutes in msecs
+        self.refreshSpreadsheetTimer.setInterval(REFRESH_TIMER_LENGTH_SECS * 1000)
         self.refreshSpreadsheetTimer.timeout.connect(self._refreshSpreadsheet)
         self.refreshSpreadsheetTimer.start()
 
     def addItem(self, item):
-        """Parses item and adds it to the deque for use with GSpread."""
-        #TODO add handling for incoming barcodes
+        """Parses item and adds it to the deque for use with GSpread.
+        item should be a dictionary, list, or string. 
+        If a string, it should be a GSpread function name.
+        Dict should have key named `function` with a string value containing a GSpread function name. 
+        First object in list should be a string that matches a GSpread function name. 
+        Entire item will be passed to the api after function reference is added."""
+        if isinstance(item, str):
+            func_ref = self.getGspreadFunction(item)
+            if func_ref is not None:
+                item = func_ref
+
+        elif isinstance(item, dict):
+            func_ref = self.getGspreadFunction(str(item.get('function')))
+            if func_ref is not None:
+                item['function'] = func_ref
+            
+        elif isinstance(item, list):
+            func_ref = self.getGspreadFunction(str(item.pop(0)))
+            if func_ref is not None:
+                item.insert(0, func_ref)
+
+        else:
+            logger.info('Item of wrong type added to api: %s of type %s', 
+                str(item), type(item))
+            return
+
+        if func_ref is None:
+            logger.warning('Function reference not found for item: %s', str(item))
+            return
 
         self.deque.appendleft(item)
+        print("appendleft successful:", item)
+
+    def getGspreadFunction(self, func_name: str):
+        """Takes func_name string and returns GSpread method of same name.
+        If func_name is not found, return None."""
+        if func_name == "insert_rows":
+            return self.sheet.insert_rows
+        elif func_name == "delete_rows":
+            return self.sheet.delete_rows
+        elif func_name == "getAccessToSpreadsheet":
+            return self.getAccessToSpreadsheet
+        else:
+            return None
 
     def kill(self):
         """Stops dequeworker thread. Once the thread closes the app shuts down."""
         self.worker.kill()
 
     def shutdownApp(self):
-        """Shuts down main QApplication when connection to spreadsheet fails."""
+        """Shuts down main QApplication. Used when critical or unexpected error occurs
+        and app needs to restart."""
         self.refreshSpreadsheetTimer.stop()
         qApp.quit()
     
@@ -172,19 +214,19 @@ class GSpreadAPIHandler:
             gc = gspread.service_account(filename='credentials.json')
             self.ss = gc.open_by_key(self.spreadsheet_key)
             self.sheet = self.ss.worksheet(self.sheet_name)
+            print("spreadsheet access successful")
             return
 
         except (FileNotFoundError, json.decoder.JSONDecodeError):
-            logger.error("Cannot access credentials and/or service account.", 
-                exc_info=True)
+            err_str = "Cannot access credentials and/or service account."
 
         except TypeError:
-            logger.error("Missing spreadsheet_key.", exc_info=True)
+            err_str = "Missing spreadsheet_key."
 
         except gspread.exceptions.WorksheetNotFound:
-            logger.error(f"Cannot find sheet named {self.sheet_name}.")
+            err_str = f"Cannot find sheet named {self.sheet_name}."
         
-        raise AccessSpreadsheetError
+        raise AccessSpreadsheetError(err_str)
 
     def _refreshSpreadsheet(self):
-        self.addItem(self.getAccessToSpreadsheet)
+        self.addItem("getAccessToSpreadsheet")

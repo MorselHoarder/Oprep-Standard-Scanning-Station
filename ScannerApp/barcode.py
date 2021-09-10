@@ -3,6 +3,8 @@ import datetime as dt
 import re
 from typing import Dict, List
 
+from .logger import logger
+
 class BaseBarcodeScan(ABC):
     """Abstract barcode scan object. Barcode scan objects must inherit from this object.
     This object is not instantiable."""
@@ -26,7 +28,7 @@ class BaseBarcodeScan(ABC):
 
     @abstractmethod
     def getAPIinfo(self) -> Dict:
-        """Returns an dictionary of actions and information for the API to parse."""
+        """Returns a dictionary of actions and information for the API to parse."""
         pass
 
 
@@ -72,6 +74,9 @@ class OrganicPrepStandardBarcodeScan(BaseBarcodeScan):
                     "Scanned: " + self.getScannedTimeStamp()]
 
     def getAPIinfo(self) -> Dict:
-        return 
+        if self.is_matched:
+            return {"function": "insert_rows", "values": [self.barcode_str]}
+        else:
+            return None
         
         

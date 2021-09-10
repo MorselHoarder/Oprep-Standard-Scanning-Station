@@ -11,20 +11,21 @@ class BarcodeScannerApp:
     Main controller app. Pass in a barcode display and the api that handles interacting
     with gspread. 
     """
-    def __init__(self, spreadsheet_key, sheet_name) -> None:
+    def __init__(self, spreadsheet_key, sheet_name,
+        model=ScannerModel,
+        view=BarcodeDisplay,
+        barcode_cls=OrganicPrepStandardBarcodeScan,
+        api=GSpreadAPIHandler) -> None:
 
-        self.spreadsheet_key = spreadsheet_key
-        self.sheet_name = sheet_name
+        self.model = model(barcode_cls)
 
-        self.model = ScannerModel()
-
-        self.api = GSpreadAPIHandler(spreadsheet_key, sheet_name)
-        self.barcode_obj = OrganicPrepStandardBarcodeScan
+        self.api = api(spreadsheet_key, sheet_name)
 
         qApp.aboutToQuit.connect(self._cleanupRoutine)
 
-        self.view = BarcodeDisplay()
+        self.view = view()
         self.view.le.returnPressed.connect(self.submitLineEditEntry)
+        self.view.updateList(self.model.entries)
 
     def submitLineEditEntry(self):
         """Gets the input from the QLineedit and submits it to the view, model, and api."""
@@ -35,19 +36,18 @@ class BarcodeScannerApp:
 
         if input_str == "remove last barcode":
             self.model.removePreviousEntry()
-            self.api.addItem(self.api.sheet.deleterows)
-            return
+            self.api.addItem(["delete_rows", 1])
         elif input_str == "retry connection":
-            # TODO make this work
-            return
+            self.api.addItem("getAccessToSpreadsheet")
+        else:
+            new_barcode_scan = self.model.processNewEntry(input_str)
+            # self.api.addItem(new_barcode_scan.getAPIinfo()) 
 
-        new_barcode_scan = self.model.processNewEntry(input_str)
         self.view.barcodeSubmitted(self.model.entries)
-        self.api.addItem(new_barcode_scan)        
 
     def _cleanupRoutine(self) -> None:
         self.api.kill()
-        self.dumpDequeToJSON()
+        # self.dumpDequeToJSON()
 
     def show(self):
         self.view.show()
