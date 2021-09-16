@@ -3,7 +3,6 @@ import json
 from threading import Event
 
 from ScannerApp.utils import isConnected
-from ScannerApp.exceptions import AccessSpreadsheetError
 from ScannerApp.logger import logger
 
 import gspread
@@ -106,7 +105,7 @@ class GSpreadWorker(QObject):
                 except KeyError:
                     logger.warning(f'"function" key not found in deque item: {item}')
                     self._itemFinished = True
-                    
+
                 except GSpreadFunctionNotFoundError:
                     logger.warning(f'GSpread Function reference not found for item: {item}')
                     self._itemFinished = True
