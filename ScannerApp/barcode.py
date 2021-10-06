@@ -3,14 +3,13 @@ import datetime as dt
 import re
 from typing import Dict, List
 
-from .logger import logger
 
 class BaseBarcodeScan(ABC):
     """Abstract barcode scan object. Barcode scan objects must inherit from this object.
     This object is not instantiable."""
+
     barcode_str: str
     scanned_datetime: dt.datetime
-
 
     def __init__(self, barcode_str):
         self.barcode_str = barcode_str
@@ -18,7 +17,7 @@ class BaseBarcodeScan(ABC):
 
     def getScannedTimeStamp(self) -> str:
         # Returns string timestamp of scanned_datetime
-        return self.scanned_datetime.strftime('%m/%d/%y %H:%M')
+        return self.scanned_datetime.strftime("%m/%d/%y %H:%M")
 
     @abstractmethod
     def getBarcodeView(self) -> List[str]:
@@ -32,12 +31,13 @@ class BaseBarcodeScan(ABC):
         pass
 
 
-
 class OrganicPrepStandardBarcodeScan(BaseBarcodeScan):
     """Represents an oprep standard barcode scan.
     Includes regular expression validation."""
 
-    BARCODE_PATTERN = r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
+    BARCODE_PATTERN = (
+        r"^(pp[0-9]{4,5}|eph[0-9]{4}|[0-9]{4,5})[A-Za-z]{0,2}-([0-9]{5,6}),"
+    )
     compiled_pattern = re.compile(BARCODE_PATTERN, flags=re.IGNORECASE)
 
     def __init__(self, barcode_str):
@@ -56,7 +56,7 @@ class OrganicPrepStandardBarcodeScan(BaseBarcodeScan):
         ls = list(date_str)
 
         # early bug where date was 5 digits
-        if (len(date_str) == 5): 
+        if len(date_str) == 5:
             ls.insert(2, "0")
 
         ls.insert(2, "/")
@@ -65,18 +65,20 @@ class OrganicPrepStandardBarcodeScan(BaseBarcodeScan):
 
     def getBarcodeView(self) -> List:
         if self.is_matched:
-            return [self.standard_id, 
-                    "Expires: " + self.exp_date_str, 
-                    "Scanned: " + self.getScannedTimeStamp()]
+            return [
+                self.standard_id,
+                "Expires: " + self.exp_date_str,
+                "Scanned: " + self.getScannedTimeStamp(),
+            ]
         else:
-            return ["Invalid Barcode!",
-                    "This barcode is not from a prepped standard.",
-                    "Scanned: " + self.getScannedTimeStamp()]
+            return [
+                "Invalid Barcode!",
+                "This barcode is not from a prepped standard.",
+                "Scanned: " + self.getScannedTimeStamp(),
+            ]
 
     def getAPIinfo(self) -> Dict:
         if self.is_matched:
             return {"function": "insert_rows", "values": [self.barcode_str]}
         else:
             return None
-        
-        

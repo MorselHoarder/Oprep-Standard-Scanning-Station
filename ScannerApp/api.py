@@ -7,13 +7,7 @@ from ScannerApp.logger import logger
 
 import gspread
 from PyQt5.QtWidgets import qApp
-from PyQt5.QtCore import (
-    QObject,
-    QThread,
-    pyqtSignal,
-    pyqtSlot,
-    QTimer
-)
+from PyQt5.QtCore import QObject, QThread, pyqtSlot
 
 
 DEFAULT_SLEEP_SECS = 300.0
@@ -44,13 +38,13 @@ class GSpreadWorker(QObject):
         self._itemFinished = False
         self._timerEvent = Event()
 
-        self.mainIOhandler(self.getAccessToSpreadsheet, handler_wait_after=0)
+        self.tryGSpreadCall(self.getAccessToSpreadsheet, handler_wait_after=0)
 
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
         Sets `self.ss` and `self.sheet` variables for operations."""
-        try: 
-            gc = gspread.service_account(filename='credentials.json')
+        try:
+            gc = gspread.service_account(filename="credentials.json")
             self.ss = gc.open_by_key(self.spreadsheet_key)
             self.sheet = self.ss.worksheet(self.sheet_name)
             print("spreadsheet access successful")
@@ -64,12 +58,12 @@ class GSpreadWorker(QObject):
 
         except gspread.exceptions.WorksheetNotFound:
             err_str = f"Cannot find sheet named {self.sheet_name}."
-        
+
         raise AccessSpreadsheetError(err_str)
 
-    def getGspreadFunction(self, func_name: str):
+    def getGSpreadFunction(self, func_name: str):
         """Takes func_name string and returns GSpread method of same name.
-        If func_name is not found, return None."""
+        If func_name is not found, raises GSpreadFunctionNotFoundError."""
         if func_name == "insert_rows":
             return self.sheet.insert_rows
         elif func_name == "delete_rows":
@@ -82,24 +76,27 @@ class GSpreadWorker(QObject):
     def parseDequeItem(self, item: dict):
         """Parses `item` for GSpread function name and replaces it with a function reference.
         `item` should have key named `function` with a string value containing a GSpread function name."""
-        func_ref = self.getGspreadFunction(str(item['function']))
-        item['function'] = func_ref
+        func_ref = self.getGSpreadFunction(str(item["function"]))
+        item["function"] = func_ref
         return item
 
-    def dequeChecker(self): 
+    def dequeChecker(self):
         """Looping function that checks deque and pushes items to the handler."""
-        while (True):
+        while True:
             if self.deque:
                 raw_item = self.deque.pop()
                 self._itemFinished = False
 
                 try:
                     item = self.parseDequeItem(raw_item)
-                    self.mainIOhandler(**item)
+                    self.tryGSpreadCall(**item)
 
                 except TypeError:
-                    logger.warning('Item of wrong type added to queue: %s of type %s', 
-                        str(item), type(item))
+                    logger.warning(
+                        "Item of wrong type added to queue: %s of type %s",
+                        str(item),
+                        type(item),
+                    )
                     self._itemFinished = True
 
                 except KeyError:
@@ -107,7 +104,9 @@ class GSpreadWorker(QObject):
                     self._itemFinished = True
 
                 except GSpreadFunctionNotFoundError:
-                    logger.warning(f'GSpread Function reference not found for item: {item}')
+                    logger.warning(
+                        f"GSpread Function reference not found for item: {item}"
+                    )
                     self._itemFinished = True
 
             if self._stopIOthread:
@@ -117,48 +116,53 @@ class GSpreadWorker(QObject):
 
             self._wait(0.005)
 
-    def mainIOhandler(self, function, *args, handler_wait_after=4.0, **kwargs):
+    def tryGSpreadCall(self, function, *args, handler_wait_after=4.0, **kwargs):
         """Calls `function` with *args, **kwargs.
         Main method for interacting with spreadsheet or other IO operations.
         Handles exceptions and API errors.
         Use `handler_wait_after` to define how long to sleep after successful finish."""
         API_error_count = 0
-        while (True):
+        while True:
             if isConnected():
                 try:
                     function(*args, **kwargs)
                     # TODO need to test exception handling
 
                 except AccessSpreadsheetError:
-                    logger.error("Unexpected error when accessing spreadsheet.", 
-                        exc_info=True)
+                    logger.error(
+                        "Unexpected error when accessing spreadsheet.", exc_info=True
+                    )
                     self.kill()
 
                 except gspread.exceptions.APIError:
                     if API_error_count >= MAX_API_TRIES:
-                        logger.error("API error count exceeded maximum tries.", 
-                            exc_info=True)
+                        logger.error(
+                            "API error count exceeded maximum tries.", exc_info=True
+                        )
                         self.kill()
                         return
                     else:
                         API_error_count += 1
-                   
+
                     logger.warning("API Error. Attempting retry.", exc_info=True)
-                    self._wait(DEFAULT_SLEEP_SECS+60)
+                    self._wait(DEFAULT_SLEEP_SECS + 60)
 
                 except Exception:
-                    logger.error('Unexpected error with mainIOhandler function.', 
-                        exc_info=True)
+                    logger.error(
+                        "Unexpected error with tryGSpreadCall function.", exc_info=True
+                    )
                     self.kill()
 
-                else: 
+                else:
                     self._itemFinished = True
                     self._wait(handler_wait_after)  # to not max google api limits
                     return
-                    
+
             else:
-                logger.warning("Cannot reach internet. \n%s", 
-                    f"Retrying connection in {DEFAULT_SLEEP_SECS/60} minutes.")
+                logger.warning(
+                    "Cannot reach internet. \n%s",
+                    f"Retrying connection in {DEFAULT_SLEEP_SECS/60} minutes.",
+                )
                 self._wait(DEFAULT_SLEEP_SECS)
 
             if self._stopIOthread:
@@ -180,11 +184,12 @@ class GSpreadWorker(QObject):
 
 
 class GSpreadAPIHandler:
-    """Handles all interfacing with """
+    """Generates thread to interface with GSpread."""
+
     def __init__(self, spreadsheet_key, sheet_name) -> None:
 
         self.deque = deque()
-        
+
         self.thread = QThread()
         self.worker = GSpreadWorker(self.deque, spreadsheet_key, sheet_name)
         self.worker.moveToThread(self.thread)
