@@ -79,6 +79,6 @@ class OrganicPrepStandardBarcodeScan(BaseBarcodeScan):
 
     def getAPIinfo(self) -> Dict:
         if self.is_matched:
-            return {"function": "insert_rows", "values": [self.barcode_str]}
+            return {"function": "insert_rows", "values": [[self.barcode_str]]}
         else:
             return None

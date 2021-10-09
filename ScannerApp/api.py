@@ -1,5 +1,6 @@
 from collections import deque
 import json
+import os
 from threading import Event
 
 from ScannerApp.utils import isConnected
@@ -9,6 +10,9 @@ import gspread
 from PyQt5.QtWidgets import qApp
 from PyQt5.QtCore import QObject, QThread, pyqtSlot
 
+API_VERSION = "1.0.0"
+DEQUE_ITEMS_KEY = "Items"
+DEQUE_DUMP_FILE = "deque_dump.json"
 
 DEFAULT_SLEEP_SECS = 300.0
 MAX_API_TRIES = 5
@@ -21,6 +25,14 @@ class AccessSpreadsheetError(OSError):
 
 class GSpreadFunctionNotFoundError(NameError):
     pass
+
+
+class JSONEncoderWithFunctions(json.JSONEncoder):
+    def default(self, o):
+        if callable(o):
+            return o.__name__
+        else:
+            return json.JSONEncoder.default(self, o)
 
 
 class GSpreadWorker(QObject):
@@ -66,8 +78,8 @@ class GSpreadWorker(QObject):
         If func_name is not found, raises GSpreadFunctionNotFoundError."""
         if func_name == "insert_rows":
             return self.sheet.insert_rows
-        elif func_name == "delete_rows":
-            return self.sheet.delete_rows
+        elif func_name == "delete_row":
+            return self.sheet.delete_row
         elif func_name == "getAccessToSpreadsheet":
             return self.getAccessToSpreadsheet
         else:
@@ -88,8 +100,10 @@ class GSpreadWorker(QObject):
                 self._itemFinished = False
 
                 try:
-                    item = self.parseDequeItem(raw_item)
-                    self.tryGSpreadCall(**item)
+                    if raw_item is not None:
+                        item = self.parseDequeItem(raw_item)
+                        print(item)
+                        self.tryGSpreadCall(**item)
 
                 except TypeError:
                     logger.warning(
@@ -197,6 +211,8 @@ class GSpreadAPIHandler:
         self.thread.finished.connect(self.shutdownApp)
         self.thread.start()
 
+        self.readDequeFromJSON()
+
     def addItem(self, item: dict):
         """Adds an item to the deque for the worker thread to parse."""
         self.deque.appendleft(item)
@@ -204,8 +220,53 @@ class GSpreadAPIHandler:
     def kill(self):
         """Stops dequeworker thread. Once the thread closes the app shuts down."""
         self.worker.kill()
+        self.dumpDequeToJSON()
 
     def shutdownApp(self):
         """Shuts down main QApplication. Used when critical or unexpected error occurs
         and app needs to restart."""
         qApp.quit()
+
+    def dumpDequeToJSON(self):
+        """Dumps all remaining items in the deque to JSON file"""
+        data_dict = dict(version=API_VERSION)
+
+        item_list = []
+
+        while True:
+            try:
+                item = self.deque.pop()
+            except IndexError:
+                break
+            else:
+                item_list.append(item)
+
+        data_dict[DEQUE_ITEMS_KEY] = item_list
+
+        try:
+            with open(DEQUE_DUMP_FILE, "w+") as deque_dump:
+                json.dump(data_dict, deque_dump, indent=2, cls=JSONEncoderWithFunctions)
+        except FileNotFoundError:
+            logger.info("No deque_dump.json file found.")
+        except PermissionError:
+            logger.info("No write permissions for deque_dump.json file.")
+        else:
+            logger.info("Deque dumped to JSON.")
+
+    def readDequeFromJSON(self):
+        "Gets any deque items from deque_dump.json and puts them into the deque."
+        try:
+            if os.path.exists(DEQUE_DUMP_FILE):
+                with open(DEQUE_DUMP_FILE, "r") as deque_dump:
+                    data_dict = json.load(deque_dump)
+                    for item in data_dict[DEQUE_ITEMS_KEY]:
+                        self.addItem(item)
+                with open(DEQUE_DUMP_FILE, "w+") as deque_dump:
+                    data_dict[DEQUE_ITEMS_KEY] = []  # clear old values
+                    json.dump(data_dict, deque_dump, indent=2)
+        except FileNotFoundError:
+            logger.info("No deque_dump.json file found.")
+        except PermissionError:
+            logger.info("No read/write permissions for deque_dump.json file.")
+        else:
+            logger.info("Read items from deque_dump.json into deque.")

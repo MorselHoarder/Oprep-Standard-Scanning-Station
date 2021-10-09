@@ -33,7 +33,6 @@ class BarcodeScannerApp:
         self.view.connectUserInputSlot(self.receiveUserInput)
         self.view.updateList(self.model.entries)
 
-    @pyqtSlot
     def receiveUserInput(self):
         """Slotted function triggered by the view.
         Gets user input from the view and submits it to the view, model, and api."""
@@ -44,12 +43,12 @@ class BarcodeScannerApp:
 
         if input_str == "remove last barcode":
             self.model.removePreviousEntry()
-            self.api.addItem(dict(function="delete_rows"))
+            self.api.addItem(dict(function="delete_row", index=1))
         elif input_str == "retry connection":
             self.api.addItem(dict(function="getAccessToSpreadsheet"))
         else:
             new_barcode_scan = self.model.processNewEntry(input_str)
-            # self.api.addItem(new_barcode_scan.getAPIinfo())
+            self.api.addItem(new_barcode_scan.getAPIinfo())
 
         self.view.barcodeSubmitted(self.model.entries)
 

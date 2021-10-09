@@ -1,5 +1,4 @@
 import socket
-import json
 
 
 def isConnected():
@@ -12,10 +11,3 @@ def isConnected():
     except OSError:
         pass
     return False
-
-class JSONEncoderWithFunctions(json.JSONEncoder):
-    def default(self, o):
-        if (callable(o)):
-            return o.__name__
-        else:
-            return json.JSONEncoder.default(self, o)

@@ -26,6 +26,6 @@
 #     print("type error")
 
 # print("after try block")
-
-o = []
-print(bool([]))
+data_dict = {"info": "1.0.0", "items": ""}
+for item in data_dict["items"]:
+    print(item)
