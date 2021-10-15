@@ -59,7 +59,7 @@ class GSpreadWorker(QObject):
             gc = gspread.service_account(filename="credentials.json")
             self.ss = gc.open_by_key(self.spreadsheet_key)
             self.sheet = self.ss.worksheet(self.sheet_name)
-            print("spreadsheet access successful")
+            logger.info("Spreadsheet access successful.")
             return
 
         except (FileNotFoundError, json.decoder.JSONDecodeError):
@@ -102,7 +102,6 @@ class GSpreadWorker(QObject):
                 try:
                     if raw_item is not None:
                         item = self.parseDequeItem(raw_item)
-                        print(item)
                         self.tryGSpreadCall(**item)
 
                 except TypeError:
@@ -193,7 +192,6 @@ class GSpreadWorker(QObject):
 
     @pyqtSlot()
     def run(self):
-        print("thread started")
         self.dequeChecker()
 
 
@@ -264,9 +262,13 @@ class GSpreadAPIHandler:
                 with open(DEQUE_DUMP_FILE, "w+") as deque_dump:
                     data_dict[DEQUE_ITEMS_KEY] = []  # clear old values
                     json.dump(data_dict, deque_dump, indent=2)
-        except FileNotFoundError:
-            logger.info("No deque_dump.json file found.")
+                logger.info("Read items from deque_dump.json into deque.")
+            else:
+                logger.info("No deque_dump.json file found.")
         except PermissionError:
             logger.info("No read/write permissions for deque_dump.json file.")
-        else:
-            logger.info("Read items from deque_dump.json into deque.")
+        except json.decoder.JSONDecodeError:
+            logger.warning(
+                "deque_dump.json corrupted. File will be removed.", exc_info=True
+            )
+            os.remove(DEQUE_DUMP_FILE)

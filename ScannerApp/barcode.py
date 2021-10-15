@@ -11,7 +11,7 @@ class BaseBarcodeScan(ABC):
     barcode_str: str
     scanned_datetime: dt.datetime
 
-    def __init__(self, barcode_str):
+    def __init__(self, barcode_str: str):
         self.barcode_str = barcode_str
         self.scanned_datetime = dt.datetime.now()
 

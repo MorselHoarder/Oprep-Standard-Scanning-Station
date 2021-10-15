@@ -4,3 +4,4 @@ credentials.json
 config.ini
 deque_dump.json
 __pycache__
+*.log

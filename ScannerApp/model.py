@@ -1,4 +1,8 @@
 from .barcode import BaseBarcodeScan
+from .logger import logger
+
+
+SCAN_LOG_FILE = "scan_history.log"
 
 
 class ScannerModel:
@@ -17,6 +21,19 @@ class ScannerModel:
         Can be any object that inherits from BaseBarcodeScan"""
         self.entries.insert(0, item)
         self.entries.pop()
+        self._appendScanLog(item.getScannedTimeStamp(), item.barcode_str)
+
+    @staticmethod
+    def _appendScanLog(*items):
+        """Appends a csv-formatted line to the scan log."""
+        s = "\n" + ",".join(items)
+        try:
+            with open(SCAN_LOG_FILE, "a+") as csv_file:
+                csv_file.write(s)
+        except FileNotFoundError:
+            logger.info(f"No {SCAN_LOG_FILE} file found.")
+        except PermissionError:
+            logger.info(f"No write permissions for {SCAN_LOG_FILE} file.")
 
     def removePreviousEntry(self):
         self.entries.pop(0)

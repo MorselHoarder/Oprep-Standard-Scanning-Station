@@ -27,5 +27,6 @@
 
 # print("after try block")
 data_dict = {"info": "1.0.0", "items": ""}
-for item in data_dict["items"]:
+a = object()
+for item in a["items"]:
     print(item)
