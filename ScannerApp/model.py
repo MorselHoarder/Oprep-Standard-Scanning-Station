@@ -26,7 +26,7 @@ class ScannerModel:
     @staticmethod
     def _appendScanLog(*items):
         """Appends a csv-formatted line to the scan log."""
-        s = "\n" + ",".join(items)
+        s = ", ".join(items) + "\n"
         try:
             with open(SCAN_LOG_FILE, "a+") as csv_file:
                 csv_file.write(s)

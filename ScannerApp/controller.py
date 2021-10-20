@@ -54,7 +54,6 @@ class BarcodeScannerApp:
 
     def _cleanupRoutine(self) -> None:
         self.api.kill()
-        # self.dumpDequeToJSON()
 
     def show(self):
         self.view.show()
