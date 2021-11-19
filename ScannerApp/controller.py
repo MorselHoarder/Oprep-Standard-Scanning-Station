@@ -53,7 +53,7 @@ class BarcodeScannerApp:
         self.view.barcodeSubmitted(self.model.entries)
 
     def _cleanupRoutine(self) -> None:
-        self.api.kill()
+        self.api.shutdown()
 
     def show(self):
         self.view.show()

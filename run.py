@@ -6,6 +6,7 @@ from ScannerApp.controller import BarcodeScannerApp
 
 
 SPREADSHEET_KEY = "11Y3oufYpwWanKRB0KzxsrhkqErfPgak-LylKCt6a4i0"  # test spreadsheet
+# SPREADSHEET_KEY = "1c0J8E4Z96jPnu2hqgwEEXzWmhldv-BHCU66rwUCrWw0" # Prep Inventory
 SHEET_NAME_TO_SCAN = "Scan"
 
 

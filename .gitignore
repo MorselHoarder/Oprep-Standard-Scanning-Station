@@ -1,5 +1,4 @@
 .vscode
-errors.log
 credentials.json
 config.ini
 deque_dump.json

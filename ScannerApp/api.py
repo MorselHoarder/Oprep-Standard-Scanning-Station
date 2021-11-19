@@ -8,7 +8,7 @@ from ScannerApp.logger import logger
 
 import gspread
 from PyQt5.QtWidgets import qApp
-from PyQt5.QtCore import QObject, QThread, pyqtSlot
+from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 API_VERSION = "1.0.0"
 DEQUE_ITEMS_KEY = "Items"
@@ -35,12 +35,20 @@ class JSONEncoderWithFunctions(json.JSONEncoder):
             return json.JSONEncoder.default(self, o)
 
 
+class WorkerSignals(QObject):
+    """Worker signals"""
+
+    finished = pyqtSignal()
+
+
 class GSpreadWorker(QObject):
     """Worker object that checks a deque for items and passes them to the API.
     To be instantiated by a handler class that adds items to the deque for processing."""
 
     def __init__(self, deque, spreadsheet_key, sheet_name):
         super().__init__()
+
+        self.signals = WorkerSignals()
 
         self.deque = deque
         self.spreadsheet_key = spreadsheet_key
@@ -51,6 +59,9 @@ class GSpreadWorker(QObject):
         self._timerEvent = Event()
 
         self.tryGSpreadCall(self.getAccessToSpreadsheet, handler_wait_after=0)
+
+    def test(self):
+        raise NotImplementedError("Test function.")
 
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
@@ -82,6 +93,8 @@ class GSpreadWorker(QObject):
             return self.sheet.delete_row
         elif func_name == "getAccessToSpreadsheet":
             return self.getAccessToSpreadsheet
+        elif func_name == "test":
+            return self.test
         else:
             raise GSpreadFunctionNotFoundError("GSpread function name not found.")
 
@@ -94,6 +107,7 @@ class GSpreadWorker(QObject):
 
     def dequeChecker(self):
         """Looping function that checks deque and pushes items to the handler."""
+        raw_item = None
         while True:
             if self.deque:
                 raw_item = self.deque.pop()
@@ -107,23 +121,25 @@ class GSpreadWorker(QObject):
                 except TypeError:
                     logger.warning(
                         "Item of wrong type added to queue: %s of type %s",
-                        str(item),
-                        type(item),
+                        str(raw_item),
+                        type(raw_item),
                     )
                     self._itemFinished = True
 
                 except KeyError:
-                    logger.warning(f'"function" key not found in deque item: {item}')
+                    logger.warning(
+                        f'"function" key not found in deque item: {raw_item}'
+                    )
                     self._itemFinished = True
 
                 except GSpreadFunctionNotFoundError:
                     logger.warning(
-                        f"GSpread Function reference not found for item: {item}"
+                        f"GSpread Function reference not found for item: {raw_item}"
                     )
                     self._itemFinished = True
 
             if self._stopIOthread:
-                if not self._itemFinished:
+                if not self._itemFinished and raw_item is not None:
                     self.deque.append(raw_item)
                 break
 
@@ -193,39 +209,62 @@ class GSpreadWorker(QObject):
     @pyqtSlot()
     def run(self):
         self.dequeChecker()
+        logger.info("GSpreadWorker finished.")
+        self.signals.finished.emit()
 
 
-class GSpreadAPIHandler:
+class GSpreadAPIHandler(QObject):
     """Generates thread to interface with GSpread."""
 
     def __init__(self, spreadsheet_key, sheet_name) -> None:
+        super().__init__()
+        self.spreadsheet_key = spreadsheet_key
+        self.sheet_name = sheet_name
 
         self.deque = deque()
 
-        self.thread = QThread()
-        self.worker = GSpreadWorker(self.deque, spreadsheet_key, sheet_name)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.thread.finished.connect(self.shutdownApp)
-        self.thread.start()
+        self.isShutDown = False
+        self._spawnThread()
 
-        self.readDequeFromJSON()
+        self._readDequeFromJSON()
+
+        self.addItem({"function": "test"})
 
     def addItem(self, item: dict):
         """Adds an item to the deque for the worker thread to parse."""
         self.deque.appendleft(item)
 
-    def kill(self):
-        """Stops dequeworker thread. Once the thread closes the app shuts down."""
+    def shutdown(self):
+        """Shuts down API connection thread and saves unsent deque items."""
+        logger.info("Shutting down API connection.")
+        self._killThread()
+        self._dumpDequeToJSON()
+
+    def _spawnThread(self):
+        self.thread = QThread()
+        self.worker = GSpreadWorker(self.deque, self.spreadsheet_key, self.sheet_name)
+        self.worker.signals.finished.connect(self.thread.quit)
+        self.worker.signals.finished.connect(self.worker.deleteLater)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.finished.connect(self._restartThread)
+        self.thread.start()
+
+    def _restartThread(self):
+        if not self.isShutDown:
+            logger.info("Restarting API connection.")
+            self._spawnThread()
+
+    def _killThread(self):
+        """Stops dequeworker thread."""
+        logger.info("Killing GSpreadAPIHandler thread.")
+        self.isShutDown = True
         self.worker.kill()
-        self.dumpDequeToJSON()
+        if self.thread.isRunning():
+            self.thread.quit()
 
-    def shutdownApp(self):
-        """Shuts down main QApplication. Used when critical or unexpected error occurs
-        and app needs to restart."""
-        qApp.quit()
-
-    def dumpDequeToJSON(self):
+    def _dumpDequeToJSON(self):
         """Dumps all remaining items in the deque to JSON file"""
         data_dict = dict(version=API_VERSION)
 
@@ -251,7 +290,7 @@ class GSpreadAPIHandler:
         else:
             logger.info("Deque dumped to JSON.")
 
-    def readDequeFromJSON(self):
+    def _readDequeFromJSON(self):
         "Gets any deque items from deque_dump.json and puts them into the deque."
         try:
             if os.path.exists(DEQUE_DUMP_FILE):
