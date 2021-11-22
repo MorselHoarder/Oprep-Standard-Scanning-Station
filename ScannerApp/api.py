@@ -60,9 +60,6 @@ class GSpreadWorker(QObject):
 
         self.tryGSpreadCall(self.getAccessToSpreadsheet, handler_wait_after=0)
 
-    def test(self):
-        raise NotImplementedError("Test function.")
-
     def getAccessToSpreadsheet(self):
         """Uses service account credentials to access the spreadsheet.
         Sets `self.ss` and `self.sheet` variables for operations."""
@@ -102,8 +99,9 @@ class GSpreadWorker(QObject):
         """Parses `item` for GSpread function name and replaces it with a function reference.
         `item` should have key named `function` with a string value containing a GSpread function name."""
         func_ref = self.getGSpreadFunction(str(item["function"]))
-        item["function"] = func_ref
-        return item
+        item_copy = item.copy()
+        item_copy["function"] = func_ref
+        return item_copy
 
     def dequeChecker(self):
         """Looping function that checks deque and pushes items to the handler."""
@@ -228,8 +226,6 @@ class GSpreadAPIHandler(QObject):
 
         self._readDequeFromJSON()
 
-        self.addItem({"function": "test"})
-
     def addItem(self, item: dict):
         """Adds an item to the deque for the worker thread to parse."""
         self.deque.appendleft(item)
@@ -241,6 +237,7 @@ class GSpreadAPIHandler(QObject):
         self._dumpDequeToJSON()
 
     def _spawnThread(self):
+        """Subroutine that handles starting a thread with GSpreadWorker"""
         self.thread = QThread()
         self.worker = GSpreadWorker(self.deque, self.spreadsheet_key, self.sheet_name)
         self.worker.signals.finished.connect(self.thread.quit)
@@ -263,6 +260,7 @@ class GSpreadAPIHandler(QObject):
         self.worker.kill()
         if self.thread.isRunning():
             self.thread.quit()
+            self.thread.wait()
 
     def _dumpDequeToJSON(self):
         """Dumps all remaining items in the deque to JSON file"""
