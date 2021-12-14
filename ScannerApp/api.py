@@ -7,16 +7,38 @@ from ScannerApp.utils import isConnected
 from ScannerApp.logger import logger
 
 import gspread
-from PyQt5.QtWidgets import qApp
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+
+# Exceptions
+from http.client import RemoteDisconnected
+from socket import timeout as socket_timeout
+from urllib3.exceptions import (
+    ReadTimeoutError,
+    ProtocolError,
+    NewConnectionError,
+    MaxRetryError,
+)
+from requests.exceptions import ReadTimeout, ConnectionError
+from google.auth.exceptions import TransportError
+
+CONNECTION_ERRORS = (
+    RemoteDisconnected,
+    socket_timeout,
+    ReadTimeout,
+    ReadTimeoutError,
+    ProtocolError,
+    NewConnectionError,
+    MaxRetryError,
+    ConnectionError,
+    TransportError,
+)
 
 API_VERSION = "1.0.0"
 DEQUE_ITEMS_KEY = "Items"
 DEQUE_DUMP_FILE = "deque_dump.json"
 
-DEFAULT_SLEEP_SECS = 300.0
+DEFAULT_SLEEP_SECS = 600
 MAX_API_TRIES = 5
-REFRESH_TIMER_LENGTH_SECS = 600
 
 
 class AccessSpreadsheetError(OSError):
@@ -90,8 +112,6 @@ class GSpreadWorker(QObject):
             return self.sheet.delete_row
         elif func_name == "getAccessToSpreadsheet":
             return self.getAccessToSpreadsheet
-        elif func_name == "test":
-            return self.test
         else:
             raise GSpreadFunctionNotFoundError("GSpread function name not found.")
 
@@ -153,32 +173,38 @@ class GSpreadWorker(QObject):
             if isConnected():
                 try:
                     function(*args, **kwargs)
-                    # TODO need to test exception handling
 
                 except AccessSpreadsheetError:
                     logger.error(
                         "Unexpected error when accessing spreadsheet.", exc_info=True
                     )
-                    self.kill()
+                    # TODO: Handle this error better. Maybe with a dialog to close program?
+                    self.stop()
 
                 except gspread.exceptions.APIError:
                     if API_error_count >= MAX_API_TRIES:
                         logger.error(
                             "API error count exceeded maximum tries.", exc_info=True
                         )
-                        self.kill()
-                        return
+                        self.stop()
                     else:
                         API_error_count += 1
+                        logger.warning("API Error. Attempting retry.")
+                        self._wait(DEFAULT_SLEEP_SECS)
 
-                    logger.warning("API Error. Attempting retry.", exc_info=True)
-                    self._wait(DEFAULT_SLEEP_SECS + 60)
+                except CONNECTION_ERRORS as e:
+                    logger.warning(
+                        f"Connection Error Raised: {type(e)} {e}. \n%s",
+                        f"Attempting API restart in {DEFAULT_SLEEP_SECS/60} minutes.",
+                    )
+                    self._wait(DEFAULT_SLEEP_SECS)
+                    self.stop()
 
                 except Exception:
                     logger.error(
                         "Unexpected error with tryGSpreadCall function.", exc_info=True
                     )
-                    self.kill()
+                    self.stop()
 
                 else:
                     self._itemFinished = True
@@ -195,12 +221,14 @@ class GSpreadWorker(QObject):
             if self._stopIOthread:
                 break
 
-    def _wait(self, time_secs: float):
+    def _wait(self, time_secs):
         """Waits a number of seconds."""
         self._timerEvent.wait(time_secs)
 
     @pyqtSlot()
-    def kill(self):
+    def stop(self):
+        """Safely stops the worker thread. This will cause the worker to
+        finish its current loop and emit the finished signal."""
         self._stopIOthread = True
         self._timerEvent.set()
 
@@ -233,7 +261,7 @@ class GSpreadAPIHandler(QObject):
     def shutdown(self):
         """Shuts down API connection thread and saves unsent deque items."""
         logger.info("Shutting down API connection.")
-        self._killThread()
+        self._stopThread()
         self._dumpDequeToJSON()
 
     def _spawnThread(self):
@@ -253,11 +281,11 @@ class GSpreadAPIHandler(QObject):
             logger.info("Restarting API connection.")
             self._spawnThread()
 
-    def _killThread(self):
+    def _stopThread(self):
         """Stops dequeworker thread."""
-        logger.info("Killing GSpreadAPIHandler thread.")
+        logger.info("Stopping GSpreadAPIHandler thread.")
         self.isShutDown = True
-        self.worker.kill()
+        self.worker.stop()
         if self.thread.isRunning():
             self.thread.quit()
             self.thread.wait()

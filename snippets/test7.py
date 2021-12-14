@@ -1,32 +1,17 @@
-# class Thing:
-#     foo = 1
+import logging
 
-#     def __init__(self):
-#         self.bar = 2
+log_format = "%(asctime)s - %(levelname)s - %(message)s"
+logging.basicConfig(
+    format=log_format, handlers=[logging.FileHandler("errors.log")], level=logging.INFO
+)
+logger = logging.getLogger("universal")
 
-#     def doThing(self):
-#         self.baz = 3
-#         # print(f"{self.baz} is set")
+CONNECTION_ERRORS = (OSError, ConnectionError, TimeoutError, ZeroDivisionError)
 
-# # class Thing2:
-
-# #     def doThing2(self, attr):
-# #         print(attr)
-
-
-# a = Thing()
-# print(**a)
-# b = Thing2()
-# a.doThing()
-# b.doThing2(a.baz)
-
-# try:
-#     1/0
-# except TypeError:
-#     print("type error")
-
-# print("after try block")
-data_dict = {"info": "1.0.0", "items": ""}
-a = object()
-for item in a["items"]:
-    print(item)
+try:
+    1 / 0
+except CONNECTION_ERRORS as e:
+    logger.warning(
+        f"Connection Error Raised: {type(e)}: {e}. %s",
+        f"Attempting API restart in {120/60} minutes.",
+    )
